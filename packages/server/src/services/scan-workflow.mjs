@@ -633,8 +633,10 @@ next_action_detail — The specific URL, email address, or instruction extracted
           ],
         );
         this.stats.new++;
+        await this.saveStats();
       } catch (err) {
         this.stats.errors++;
+        await this.saveStats();
         this.emit('error', `[Save] "${job.title}": ${err.message}`, { agent: 'save' });
       }
     }

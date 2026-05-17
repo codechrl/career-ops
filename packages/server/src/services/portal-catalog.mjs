@@ -3,8 +3,8 @@
  * Manages search_config (JSONB) per portal — verification, LLM discovery, scheduled refresh.
  */
 import { dbAll, dbGet, dbRun } from '../loaders/database.mjs';
-import { getLLM, getLLMForProcess } from '../llm/index.mjs';
-import { structuredChat } from './structured-llm.mjs';
+import { getLLMForProcess } from '../llm/index.mjs';
+import { runPortalDiscoveryAgent } from './portal-discovery-agent.mjs';
 
 const VERIFY_TIMEOUT_MS = 15_000;
 
@@ -79,93 +79,92 @@ export async function verifyPortal(portalId) {
 }
 
 /**
- * Verify all portals with a search_config (non-ATS, non-unsupported).
- * Returns array of results.
+ * Run agentic discovery for all portals.
+ * The agent fetches pages, tests endpoints, reasons, and saves the found search_config.
  */
-export async function refreshAllPortals(onEvent) {
-  const portals = await dbAll('SELECT id FROM portals ORDER BY id ASC');
+export async function refreshAllPortals(onEvent, signal) {
+  const portals = await dbAll('SELECT * FROM portals ORDER BY id ASC');
   const results = [];
-  for (const { id } of portals) {
+  const llm = await getLLMForProcess('portal-discovery');
+
+  for (const portal of portals) {
+    if (signal?.aborted) {
+      onEvent?.({ type: 'done', total: results.length, ok: results.filter(r => !r.error).length, failing: results.filter(r => r.error).length, cancelled: true });
+      return results;
+    }
+
+    // Skip if already discovered and URL still works
+    const existingCfg = portal.search_config;
+    if (existingCfg?.url_template && existingCfg.method !== 'unsupported' && existingCfg.method !== 'unknown') {
+      const testUrl = buildTestUrl(portal);
+      const ping = await pingUrl(testUrl);
+      if (ping.ok) {
+        const now = new Date().toISOString();
+        await dbRun(
+          'UPDATE portals SET catalog_status = ?, last_catalog_refresh = ?, updated_at = ? WHERE id = ?',
+          ['ok', now, now, portal.id]
+        );
+        results.push({ id: portal.id, provider: portal.provider, status: 'skipped', confidence: existingCfg.confidence });
+        onEvent?.({ type: 'progress', id: portal.id, provider: portal.provider, status: 'skipped (still working)', skipped: true });
+        continue;
+      }
+      onEvent?.({ type: 'log', id: portal.id, provider: portal.provider, message: `Existing config failed ping (${ping.status || ping.error}), re-discovering…` });
+    }
+
+    onEvent?.({ type: 'progress', id: portal.id, provider: portal.provider, status: 'discovering' });
     try {
-      const r = await verifyPortal(id);
-      results.push(r);
-      if (onEvent) onEvent({ type: 'progress', id, provider: r.provider, status: r.status });
+      const cfg = await runPortalDiscoveryAgent(
+        portal,
+        llm,
+        (msg) => onEvent?.({ type: 'log', id: portal.id, provider: portal.provider, message: msg }),
+        signal,
+      );
+      const now = new Date().toISOString();
+      const newConfig = {
+        ...cfg,
+        discovered_by: 'agent',
+        discovered_at: now,
+      };
+      await dbRun(
+        'UPDATE portals SET search_config = ?, catalog_status = ?, last_catalog_refresh = ?, updated_at = ? WHERE id = ?',
+        [JSON.stringify(newConfig), cfg.confidence === 'high' ? 'ok' : 'pending', now, now, portal.id]
+      );
+      results.push({ id: portal.id, provider: portal.provider, status: cfg.method, confidence: cfg.confidence });
+      onEvent?.({ type: 'progress', id: portal.id, provider: portal.provider, status: `${cfg.method} (${cfg.confidence})` });
     } catch (err) {
-      results.push({ id, error: err.message });
-      if (onEvent) onEvent({ type: 'progress', id, provider: String(id), status: 'failing' });
+      results.push({ id: portal.id, provider: portal.provider, error: err.message });
+      onEvent?.({ type: 'progress', id: portal.id, provider: portal.provider, status: 'error', message: err.message });
     }
   }
-  const ok = results.filter(r => r.status === 'ok').length;
-  const failing = results.filter(r => r.status !== 'ok').length;
-  if (onEvent) onEvent({ type: 'done', total: results.length, ok, failing });
+
+  const done = results.filter(r => !r.error).length;
+  const failed = results.filter(r => r.error).length;
+  onEvent?.({ type: 'done', total: results.length, ok: done, failing: failed });
   return results;
 }
 
 /**
- * Use LLM to auto-discover the search approach for a portal.
- * Fetches the portal homepage + /jobs page to infer method/url_template/notes.
+ * Run the discovery agent for a single portal and save the result.
  */
 export async function discoverPortalConfig(portalId) {
   const portal = await dbGet('SELECT * FROM portals WHERE id = ?', [portalId]);
   if (!portal) throw new Error(`Portal ${portalId} not found`);
 
   const llm = await getLLMForProcess('portal-discovery');
-  if (!llm) throw new Error('No LLM configured');
+  if (!llm) throw new Error('No LLM configured for portal-discovery');
 
-  const baseUrl = portal.careers_url || `https://${portal.provider}.com`;
-
-  // Fetch homepage and /jobs page for context
-  let pageContent = '';
-  for (const suffix of ['', '/jobs', '/api', '/rss']) {
-    try {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 10_000);
-      const res = await fetch(`${baseUrl}${suffix}`, {
-        signal: ctrl.signal,
-        headers: { 'User-Agent': 'career-ops/catalog-discover', Accept: 'text/html,application/json,application/xml' },
-      });
-      clearTimeout(t);
-      const text = await res.text();
-      // Take first 3000 chars of each page as context
-      pageContent += `\n\n--- ${baseUrl}${suffix} (${res.status}) ---\n${text.slice(0, 3000)}`;
-      if (pageContent.length > 8000) break;
-    } catch { /* skip failed pages */ }
-  }
-
-  const schema = {
-    method: 'rss_feed',
-    url_template: 'https://example.com/jobs.xml?q={query}',
-    notes: 'Short description of how search works',
-    confidence: 'high',
-  };
-
-  const result = await structuredChat(llm, schema, [
-    {
-      role: 'system',
-      content: `You are a job board API analyst. Given content from a job board website, identify the best way to programmatically search for job listings.
-Methods: rss_feed, json_api, html_scrape, playwright, ats, unsupported.
-URL template variables: {query} = URL-encoded search term, {tag} = simple tag, {category} = category slug, {slug} = role slug, {company} = company identifier.
-Return a structured JSON with method, url_template (or null if ats/unsupported), notes, confidence (high/medium/low).`,
-    },
-    {
-      role: 'user',
-      content: `Portal: ${portal.name} (${portal.provider})\nBase URL: ${baseUrl}\n\nPage content samples:\n${pageContent}\n\nIdentify the search method and URL template.`,
-    },
-  ]);
+  const cfg = await runPortalDiscoveryAgent(portal, llm);
 
   const now = new Date().toISOString();
   const newConfig = {
-    method: result.method || 'unknown',
-    url_template: result.url_template || null,
-    notes: result.notes || '',
-    discovered_by: 'llm',
+    ...cfg,
+    discovered_by: 'agent',
     discovered_at: now,
-    confidence: result.confidence || 'low',
   };
 
   await dbRun(
     'UPDATE portals SET search_config = ?, catalog_status = ?, last_catalog_refresh = ?, updated_at = ? WHERE id = ?',
-    [JSON.stringify(newConfig), 'pending', now, now, portalId]
+    [JSON.stringify(newConfig), cfg.confidence === 'high' ? 'ok' : 'pending', now, now, portalId]
   );
 
   return { id: portalId, provider: portal.provider, search_config: newConfig };

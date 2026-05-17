@@ -99,13 +99,23 @@ async function runCatalogRefresh() {
 
   console.log(`[catalog-scheduler] starting portal catalog refresh${runId ? ` #${runId}` : ''}…`);
   const lines = [];
+  let okSoFar = 0, failSoFar = 0;
   try {
     await refreshAllPortals((ev) => {
-      if (ev.type === 'progress') {
-        const icon = ev.status === 'ok' ? '✓' : '✗';
-        const msg = `${icon} [${ev.provider || ev.id}] ${ev.status}`;
+      if (ev.type === 'log') {
+        console.log(`[catalog-scheduler]   ${ev.message}`);
+      } else if (ev.type === 'progress') {
+        const msg = `[${ev.provider}] ${ev.status}${ev.message ? ' — ' + ev.message : ''}`;
         lines.push(msg);
         console.log(`[catalog-scheduler] ${msg}`);
+        if (runId && ev.status !== 'discovering') {
+          if (ev.status?.startsWith('error') || ev.status === 'error') failSoFar++;
+          else okSoFar++;
+          dbRun(
+            `UPDATE catalog_refresh_runs SET ok_count=$1, failing_count=$2, total_count=$3, log=$4 WHERE id=$5`,
+            [okSoFar, failSoFar, okSoFar + failSoFar, lines.join('\n'), runId]
+          ).catch(() => {});
+        }
       } else if (ev.type === 'done') {
         const msg = `Done — ${ev.ok} ok, ${ev.failing} failing`;
         lines.push(msg);
@@ -113,12 +123,9 @@ async function runCatalogRefresh() {
       }
     });
     if (runId) {
-      const lastDone = lines.find(l => l.startsWith('Done'));
-      const ok = lastDone ? parseInt(lastDone.match(/(\d+) ok/)?.[1] || 0) : 0;
-      const failing = lastDone ? parseInt(lastDone.match(/(\d+) failing/)?.[1] || 0) : 0;
       await dbRun(
         `UPDATE catalog_refresh_runs SET status='done', ok_count=$1, failing_count=$2, total_count=$3, log=$4, finished_at=$5 WHERE id=$6`,
-        [ok, failing, ok + failing, lines.join('\n'), new Date().toISOString(), runId]
+        [okSoFar, failSoFar, okSoFar + failSoFar, lines.join('\n'), new Date().toISOString(), runId]
       ).catch(() => {});
     }
   } catch (err) {

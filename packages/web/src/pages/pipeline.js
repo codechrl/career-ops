@@ -353,7 +353,7 @@ export function renderPipeline(root) {
                 <td style="color:${r.failing_count ? '#ff4f6d' : 'var(--muted)'}">${r.failing_count}</td>
                 <td style="color:var(--muted)">${r.total_count}</td>
                 <td>${statusBadge(r.status)}</td>
-                <td>${r.log ? `<button class="btn btn-secondary btn-sm crun-log-btn" data-id="${r.id}">Log</button>` : ''}</td>
+                <td>${r.log ? `<button class="btn btn-secondary btn-sm crun-log-btn" data-id="${r.id}">Log</button>` : ''}${r.status === 'running' ? ` <button class="btn btn-danger btn-sm crun-cancel-btn" data-id="${r.id}">&#9632; Cancel</button>` : ''}</td>
               </tr>
               <tr class="run-log-row" id="crunlog-${r.id}" style="display:none">
                 <td colspan="8">
@@ -368,6 +368,21 @@ export function renderPipeline(root) {
         btn.onclick = () => {
           const row = root.querySelector(`#crunlog-${btn.dataset.id}`);
           row.style.display = row.style.display === 'none' ? '' : 'none';
+        };
+      });
+
+      el.querySelectorAll('.crun-cancel-btn').forEach(btn => {
+        btn.onclick = async () => {
+          btn.disabled = true;
+          btn.textContent = 'Cancelling…';
+          try {
+            await api('POST', `/api/portals/catalog/runs/${btn.dataset.id}/cancel`);
+            setTimeout(loadCatalogRuns, 1500);
+          } catch (err) {
+            btn.disabled = false;
+            btn.textContent = '■ Cancel';
+            alert('Cancel failed: ' + err.message);
+          }
         };
       });
     } catch (err) {
