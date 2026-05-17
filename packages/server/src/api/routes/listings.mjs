@@ -1,87 +1,61 @@
 import express from 'express';
-import fs from 'fs';
-import path from 'path';
+import { dbAll, dbGet, dbRun, dbInsert } from '../../loaders/database.mjs';
+import { requireAuth } from '../middleware/auth.mjs';
 
 const router = express.Router();
-const TRACKER_PATH = path.resolve('data/applications.md');
-const HEADER = '| # | Date | Company | Role | Score | Status | PDF | Report |';
-const SEPARATOR = '|---|---|---|---|---|---|---|---|';
 
-function ensureTrackerFile() {
-  if (!fs.existsSync(TRACKER_PATH)) {
-    fs.mkdirSync(path.dirname(TRACKER_PATH), { recursive: true });
-    fs.writeFileSync(TRACKER_PATH, `${HEADER}\n${SEPARATOR}\n`, 'utf-8');
+router.get('/', requireAuth, async (req, res) => {
+  try {
+    const { rows } = await dbRun('SELECT * FROM listings ORDER BY created_at DESC');
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
-}
-
-function parseListings() {
-  if (!fs.existsSync(TRACKER_PATH)) return [];
-  const text = fs.readFileSync(TRACKER_PATH, 'utf-8');
-  const lines = text.split('\n').filter(l => l.startsWith('|') && !l.startsWith('|---'));
-  return lines.slice(1).map(l => {
-    const cols = l.split('|').map(s => s.trim());
-    return {
-      id: cols[1],
-      date: cols[2],
-      company: cols[3],
-      role: cols[4],
-      score: cols[5],
-      status: cols[6],
-      pdf: cols[7],
-      report: cols[8],
-    };
-  });
-}
-
-function formatRow(row) {
-  return `| ${row.id} | ${row.date} | ${row.company} | ${row.role} | ${row.score} | ${row.status} | ${row.pdf} | ${row.report} |`;
-}
-
-function writeListings(rows) {
-  const body = [HEADER, SEPARATOR, ...rows.map(formatRow)].join('\n') + '\n';
-  fs.writeFileSync(TRACKER_PATH, body, 'utf-8');
-}
-
-function nextId(rows) {
-  const ids = rows.map(r => parseInt(r.id, 10)).filter(n => !Number.isNaN(n));
-  return String(ids.length === 0 ? 1 : Math.max(...ids) + 1);
-}
-
-router.get('/', (req, res) => {
-  ensureTrackerFile();
-  res.json(parseListings());
 });
 
-router.post('/', (req, res) => {
-  const { company, role, score = '0', status = 'Evaluada', pdf = '❌', report = '' } = req.body;
+router.post('/', requireAuth, async (req, res) => {
+  const { company, role, score = '0', status = 'Evaluada', pdf = '', report = '', apply_method = 'portal' } = req.body;
   if (!company || !role) return res.status(400).json({ error: 'company and role are required' });
-  ensureTrackerFile();
-  const rows = parseListings();
-  const id = nextId(rows);
-  const date = new Date().toISOString().slice(0, 10);
-  rows.push({ id, date, company, role, score, status, pdf, report });
-  writeListings(rows);
-  res.json({ added: true, id });
+  try {
+    const now = new Date().toISOString();
+    const id = await dbInsert(
+      'INSERT INTO listings (company, role, score, status, pdf, report, apply_method, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [company, role, score, status, pdf, report, apply_method, now, now],
+    );
+    res.json({ added: true, id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-router.put('/:id', (req, res) => {
-  ensureTrackerFile();
-  const rows = parseListings();
-  const idx = rows.findIndex(r => r.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: 'Listing not found' });
-  rows[idx] = { ...rows[idx], ...req.body };
-  writeListings(rows);
-  res.json({ updated: true, id: req.params.id });
+router.put('/:id', requireAuth, async (req, res) => {
+  const allowed = ['company', 'role', 'score', 'status', 'pdf', 'report', 'apply_method'];
+  const updates = Object.entries(req.body).filter(([k]) => allowed.includes(k));
+  if (!updates.length) return res.status(400).json({ error: 'No valid fields to update' });
+  try {
+    const now = new Date().toISOString();
+    const sets = updates.map(([k], i) => `${k} = $${i + 1}`).join(', ');
+    const vals = [...updates.map(([, v]) => v), now, req.params.id];
+    await dbRun(
+      `UPDATE listings SET ${sets}, updated_at = $${updates.length + 1} WHERE id = $${updates.length + 2}`,
+      vals,
+    );
+    res.json({ updated: true, id: req.params.id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-router.delete('/:id', (req, res) => {
-  ensureTrackerFile();
-  const rows = parseListings();
-  const idx = rows.findIndex(r => r.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: 'Listing not found' });
-  rows[idx].status = 'Descartada';
-  writeListings(rows);
-  res.json({ deleted: true, id: req.params.id });
+router.delete('/:id', requireAuth, async (req, res) => {
+  try {
+    await dbRun('DELETE FROM cv_evaluations WHERE listing_id = ?', [req.params.id]);
+    await dbRun('DELETE FROM listings WHERE id = ?', [req.params.id]);
+    res.json({ deleted: true, id: req.params.id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 export default router;
+
+

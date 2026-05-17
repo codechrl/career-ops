@@ -126,6 +126,46 @@ export async function initDatabase() {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS scan_runs (
+      id SERIAL PRIMARY KEY,
+      status TEXT NOT NULL DEFAULT 'queued',
+      trigger TEXT NOT NULL DEFAULT 'manual',
+      target_ids TEXT NOT NULL DEFAULT '[]',
+      portal_ids TEXT NOT NULL DEFAULT '[]',
+      new_count INTEGER NOT NULL DEFAULT 0,
+      skipped_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      log TEXT NOT NULL DEFAULT '',
+      started_at TEXT NOT NULL,
+      finished_at TEXT
+    )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS catalog_refresh_runs (
+      id SERIAL PRIMARY KEY,
+      status TEXT NOT NULL DEFAULT 'running',
+      trigger TEXT NOT NULL DEFAULT 'manual',
+      total_count INTEGER NOT NULL DEFAULT 0,
+      ok_count INTEGER NOT NULL DEFAULT 0,
+      failing_count INTEGER NOT NULL DEFAULT 0,
+      log TEXT NOT NULL DEFAULT '',
+      started_at TEXT NOT NULL,
+      finished_at TEXT
+    )`);
+  // Migrations: add columns if they don't exist yet
+  await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS source_url TEXT`);
+  await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS source_portal TEXT`);
+  await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS scan_run_id INTEGER`);
+  await pool.query(`ALTER TABLE cv_evaluations ADD COLUMN IF NOT EXISTS preference_scores TEXT`);
+  await pool.query(`ALTER TABLE cv_evaluations ADD COLUMN IF NOT EXISTS next_action TEXT`);
+  await pool.query(`ALTER TABLE cv_evaluations ADD COLUMN IF NOT EXISTS next_action_reason TEXT`);
+  await pool.query(`ALTER TABLE cv_evaluations ADD COLUMN IF NOT EXISTS recommendation TEXT`);
+  await pool.query(`ALTER TABLE cv_evaluations ADD COLUMN IF NOT EXISTS recommendation_reason TEXT`);
+
+  // Portal catalog columns
+  await pool.query(`ALTER TABLE portals ADD COLUMN IF NOT EXISTS search_config JSONB`);
+  await pool.query(`ALTER TABLE portals ADD COLUMN IF NOT EXISTS catalog_status TEXT DEFAULT 'unknown'`);
+  await pool.query(`ALTER TABLE portals ADD COLUMN IF NOT EXISTS last_catalog_refresh TEXT`);
 
   // Seed portals if empty
   const { rows } = await pool.query('SELECT COUNT(*) as n FROM portals');
@@ -160,6 +200,7 @@ export async function initDatabase() {
       { name: 'Yenibiris.com', provider: 'yenibiris', careers_url: 'https://yenibiris.com', auth_type: 'none', enabled: 0 },
       { name: 'Secretcv.com', provider: 'secretcv', careers_url: 'https://secretcv.com', auth_type: 'none', enabled: 0 },
       { name: 'İşin Olsun', provider: 'isinolsun', careers_url: 'https://isinolsun.com', auth_type: 'none', enabled: 0 },
+      { name: 'RemoteYeah', provider: 'remoteyeah', careers_url: 'https://remoteyeah.com', auth_type: 'none', enabled: 1 },
     ];
     const now = new Date().toISOString();
     for (const p of seedPortals) {
@@ -169,6 +210,42 @@ export async function initDatabase() {
       );
     }
   }
+
+  // Migration: add remoteyeah for existing installs that don't have it yet
+  await pool.query(`
+    INSERT INTO portals (name, provider, careers_url, auth_type, enabled, created_at, updated_at)
+    SELECT 'RemoteYeah', 'remoteyeah', 'https://remoteyeah.com', 'none', 1, $1, $1
+    WHERE NOT EXISTS (SELECT 1 FROM portals WHERE provider = 'remoteyeah')
+  `, [new Date().toISOString()]);
+
+  // Migration: populate search_config for known portals where it is not yet set
+  const knownCatalog = [
+    { provider: 'remotive', search_config: { method: 'json_api', url_template: 'https://remotive.com/api/remote-jobs?search={query}&limit=50', notes: 'JSON API. search param is URL-encoded role. Returns array at .jobs[].' } },
+    { provider: 'remoteok', search_config: { method: 'json_api', url_template: 'https://remoteok.com/api?tags={tag}', notes: 'JSON API. tag = first word of role lowercased. Returns array; skip first element (meta).' } },
+    { provider: 'weworkremotely', search_config: { method: 'rss_feed', url_template: 'https://weworkremotely.com/remote-jobs.rss?term={query}', notes: 'RSS feed with term search. Parse <item> with CDATA title/company/description.' } },
+    { provider: 'himalayas', search_config: { method: 'json_api', url_template: 'https://himalayas.app/jobs/api?q={query}&limit=30', notes: 'JSON API. Returns .jobs[]. Each job has title, company.name, applicationUrl, description.' } },
+    { provider: 'workingnomads', search_config: { method: 'json_api', url_template: 'https://www.workingnomads.com/api/exposed_jobs/?category={category}', notes: 'JSON API. category = first word of role lowercased. Returns array with title, company_name, url, description.' } },
+    { provider: 'ai-jobs', search_config: { method: 'json_api', url_template: 'https://ai-jobs.net/jobs/api/?title={query}&format=json', notes: 'JSON API with Playwright fallback for HTML. Returns .jobs[].' } },
+    { provider: 'ycjobs', search_config: { method: 'html_scrape', url_template: 'https://www.ycombinator.com/jobs?q={query}', notes: 'HTML scrape with cheerio. Job cards at .JobCard_jobCard__.' } },
+    { provider: 'trueup', search_config: { method: 'html_scrape', url_template: 'https://trueup.io/jobs?q={query}&jobType=Full-Time', notes: 'HTML scrape with cheerio. Playwright may be needed for JS-rendered content.' } },
+    { provider: 'remoterocketship', search_config: { method: 'html_scrape', url_template: 'https://remoterocketship.com/jobs?search={query}', notes: 'HTML scrape with cheerio.' } },
+    { provider: 'remoteyeah', search_config: { method: 'rss_feed', url_template: 'https://remoteyeah.com/remote-{slug}-jobs.xml', notes: 'Category RSS feeds. slug derived from target_role via getRoleSlugRemoteYeah(). Default slug: software-engineer.' } },
+    { provider: 'greenhouse', search_config: { method: 'ats', url_template: 'https://job-boards.greenhouse.io/{company}', notes: 'ATS provider. Scrapes specific company boards. Configured per portal entry with careers_url.' } },
+    { provider: 'ashby', search_config: { method: 'ats', url_template: 'https://jobs.ashbyhq.com/{company}', notes: 'ATS provider. Scrapes specific company boards.' } },
+    { provider: 'lever', search_config: { method: 'ats', url_template: 'https://jobs.lever.co/{company}', notes: 'ATS provider. Scrapes specific company boards.' } },
+    { provider: 'workable', search_config: { method: 'ats', url_template: 'https://apply.workable.com/{company}', notes: 'ATS provider. Scrapes specific company boards.' } },
+    { provider: 'linkedin', search_config: { method: 'playwright', url_template: 'https://www.linkedin.com/jobs/search/?keywords={query}', notes: 'Playwright session-based. Requires saved LinkedIn session cookies.' } },
+  ];
+  // Seed default schedules if not already configured
+  const schedNow = new Date().toISOString();
+  await pool.query(
+    `INSERT INTO settings (key, value, updated_at) VALUES ('scan_schedule', $1, $2) ON CONFLICT (key) DO NOTHING`,
+    [JSON.stringify({ enabled: true, mode: 'cron', value: '0 1 * * *' }), schedNow]
+  );
+  await pool.query(
+    `INSERT INTO settings (key, value, updated_at) VALUES ('portal_catalog_schedule', $1, $2) ON CONFLICT (key) DO NOTHING`,
+    [JSON.stringify({ enabled: true, mode: 'cron', value: '0 23 * * *' }), schedNow]
+  );
 
   return pool;
 }

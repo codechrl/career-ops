@@ -11,7 +11,7 @@ export function renderJob(root) {
     <div class="tabs" id="job-tabs">
       <button class="tab-btn active" data-tab="cv">CV Profile</button>
       <button class="tab-btn" data-tab="targets">Target Setup</button>
-      <button class="tab-btn" data-tab="portals">Portals &amp; Scan</button>
+      <button class="tab-btn" data-tab="portals">Portals</button>
       <button class="tab-btn" data-tab="listings">Listings</button>
     </div>
 
@@ -163,24 +163,65 @@ export function renderJob(root) {
       <!-- Portals table -->
       <div class="table-wrap">
         <table class="data-table" id="portals-table">
-          <thead><tr><th>Name</th><th>Provider</th><th>URL</th><th>Auth</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>Provider</th><th>Search Method</th><th>Status</th><th>Last Verified</th><th></th></tr></thead>
           <tbody id="portals-tbody">
             <tr><td colspan="6"><div class="loading-row"><span class="spinner"></span> Loading…</div></td></tr>
           </tbody>
         </table>
       </div>
 
-      <!-- Scan section -->
+      <!-- Search config detail panel (shown on row click) -->
+      <div id="portal-catalog-panel" class="card" style="display:none;margin-top:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div class="card-title" id="pcp-title" style="margin:0">Search Config</div>
+          <button class="btn btn-secondary btn-sm" id="pcp-close">✕</button>
+        </div>
+        <form id="portal-catalog-form" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <input type="hidden" id="pcp-id">
+          <div class="form-group mb-0">
+            <label>Method</label>
+            <select id="pcp-method">
+              <option value="json_api">JSON API</option>
+              <option value="rss_feed">RSS Feed</option>
+              <option value="html_scrape">HTML Scrape</option>
+              <option value="playwright">Playwright</option>
+              <option value="ats">ATS (per-company)</option>
+              <option value="unsupported">Unsupported</option>
+              <option value="unknown">Unknown</option>
+            </select>
+          </div>
+          <div class="form-group mb-0" style="grid-column:1/-1">
+            <label>URL Template</label>
+            <input type="text" id="pcp-url" placeholder="https://example.com/jobs?q={query}" style="font-family:monospace;font-size:12px">
+            <small class="text-muted">Variables: {query}, {tag}, {slug}, {category}, {company}</small>
+          </div>
+          <div class="form-group mb-0" style="grid-column:1/-1">
+            <label>Notes</label>
+            <textarea id="pcp-notes" rows="2" style="resize:vertical"></textarea>
+          </div>
+          <div style="grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap">
+            <button type="submit" class="btn btn-primary btn-sm">Save Config</button>
+            <button type="button" class="btn btn-secondary btn-sm" id="pcp-verify-btn">Verify</button>
+            <button type="button" class="btn btn-secondary btn-sm" id="pcp-discover-btn">Auto-Discover (LLM)</button>
+            <span id="pcp-msg" style="font-size:12px;align-self:center"></span>
+          </div>
+        </form>
+      </div>
+
+      <!-- Catalog refresh section -->
       <div class="section-header" style="margin-top:24px">
-        <h2>Run Scan</h2>
-        <span class="text-muted" style="font-size:12px">Scans enabled portals</span>
+        <h2>Catalog Refresh</h2>
+        <button class="btn btn-secondary btn-sm" id="refresh-all-btn">Refresh All Now</button>
       </div>
-      <div class="card" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <button class="btn btn-primary" id="start-scan-btn">Start Scan</button>
-        <button class="btn btn-secondary" id="linkedin-login">LinkedIn Login</button>
-        <button class="btn btn-secondary" id="linkedin-save">Save Session</button>
+      <div class="card" style="display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center">
+        <label style="margin:0;white-space:nowrap">Schedule</label>
+        <input type="text" id="catalog-schedule-input" placeholder="e.g. 0 3 * * 0 or 24h" style="font-family:monospace;font-size:13px">
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-primary btn-sm" id="catalog-schedule-save">Save</button>
+          <button class="btn btn-secondary btn-sm" id="catalog-schedule-disable">Disable</button>
+        </div>
       </div>
-      <div class="terminal mt-16" id="scan-output" style="display:none"></div>
+      <div id="catalog-refresh-msg" class="alert" style="display:none;margin-top:8px"></div>
     </div>
 
     <!-- Listings -->
@@ -598,8 +639,8 @@ function showRankError(root, msg) {
 
 // ── Portals Tab ───────────────────────────────────────────────────────────────
 function setupPortalsTab(root) {
-  const output = root.querySelector('#scan-output');
   loadPortals(root);
+  loadCatalogSchedule(root);
 
   // Add portal button
   root.querySelector('#add-portal-btn').onclick = () => {
@@ -632,31 +673,106 @@ function setupPortalsTab(root) {
     loadPortals(root);
   };
 
-  root.querySelector('#linkedin-login').onclick = async () => {
-    output.style.display = 'block';
-    output.textContent = 'Opening LinkedIn login session…\n';
-    try {
-      const data = await api('POST', '/api/playwright/start', { portal: 'linkedin' });
-      output.textContent += JSON.stringify(data, null, 2) + '\n';
-    } catch (err) { output.textContent += 'Error: ' + err.message + '\n'; }
-  };
-  root.querySelector('#linkedin-save').onclick = async () => {
-    output.style.display = 'block';
-    output.textContent = 'Saving LinkedIn session…\n';
-    try {
-      const data = await api('POST', '/api/playwright/save', { portal: 'linkedin' });
-      output.textContent += JSON.stringify(data, null, 2) + '\n';
-    } catch (err) { output.textContent += 'Error: ' + err.message + '\n'; }
+  // Catalog panel close
+  root.querySelector('#pcp-close').onclick = () => {
+    root.querySelector('#portal-catalog-panel').style.display = 'none';
   };
 
-  root.querySelector('#start-scan-btn').onclick = () => {
-    output.style.display = 'block';
-    output.textContent = 'Starting scan…\n';
-    const es = new EventSource('/api/scan');
-    es.onmessage = ev => { output.textContent += ev.data + '\n'; output.scrollTop = output.scrollHeight; };
-    es.addEventListener('end', ev => { output.textContent += '\n' + ev.data + '\n'; es.close(); });
-    es.onerror = () => { output.textContent += '\n[scan stream closed]\n'; es.close(); };
+  // Catalog config save
+  root.querySelector('#portal-catalog-form').onsubmit = async e => {
+    e.preventDefault();
+    const id = root.querySelector('#pcp-id').value;
+    const cfg = {
+      method: root.querySelector('#pcp-method').value,
+      url_template: root.querySelector('#pcp-url').value.trim() || null,
+      notes: root.querySelector('#pcp-notes').value.trim(),
+    };
+    try {
+      await api('PUT', `/api/portals/${id}/catalog`, { search_config: cfg });
+      showPcpMsg(root, 'Saved.', 'ok');
+      loadPortals(root);
+    } catch (err) { showPcpMsg(root, err.message, 'error'); }
   };
+
+  // Verify
+  root.querySelector('#pcp-verify-btn').onclick = async () => {
+    const id = root.querySelector('#pcp-id').value;
+    showPcpMsg(root, 'Verifying…', 'ok');
+    try {
+      const r = await api('POST', `/api/portals/${id}/verify`, {});
+      showPcpMsg(root, `Status: ${r.status}${r.error ? ' — ' + r.error : ''}`, r.status === 'ok' ? 'ok' : 'error');
+      loadPortals(root);
+    } catch (err) { showPcpMsg(root, err.message, 'error'); }
+  };
+
+  // Auto-discover
+  root.querySelector('#pcp-discover-btn').onclick = async () => {
+    const id = root.querySelector('#pcp-id').value;
+    showPcpMsg(root, 'Running LLM discovery…', 'ok');
+    try {
+      const r = await api('POST', `/api/portals/${id}/discover`, {});
+      const cfg = r.search_config || {};
+      root.querySelector('#pcp-method').value = cfg.method || 'unknown';
+      root.querySelector('#pcp-url').value = cfg.url_template || '';
+      root.querySelector('#pcp-notes').value = cfg.notes || '';
+      showPcpMsg(root, `Discovered: ${cfg.method} (confidence: ${cfg.confidence || '?'})`, 'ok');
+      loadPortals(root);
+    } catch (err) { showPcpMsg(root, err.message, 'error'); }
+  };
+
+  // Refresh all — fire and forget, progress in server logs
+  root.querySelector('#refresh-all-btn').onclick = async () => {
+    const btn = root.querySelector('#refresh-all-btn');
+    btn.disabled = true;
+    btn.textContent = 'Running…';
+    try {
+      await api('POST', '/api/portals/catalog/refresh', {});
+      showCatalogMsg(root, 'Refresh started — check server logs for progress.', 'success');
+      setTimeout(() => loadPortals(root), 3000);
+    } catch (err) {
+      showCatalogMsg(root, err.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Refresh All Now';
+    }
+  };
+
+  // Catalog schedule save/disable
+  root.querySelector('#catalog-schedule-save').onclick = async () => {
+    const val = root.querySelector('#catalog-schedule-input').value.trim();
+    if (!val) return;
+    const isInterval = /^\d+(m|h|d)$/i.test(val);
+    await api('PUT', '/api/portals/catalog/schedule', { enabled: true, mode: isInterval ? 'interval' : 'cron', value: val });
+    showCatalogMsg(root, 'Schedule saved.', 'success');
+  };
+  root.querySelector('#catalog-schedule-disable').onclick = async () => {
+    await api('PUT', '/api/portals/catalog/schedule', { enabled: false, mode: 'cron', value: '0 3 * * 0' });
+    showCatalogMsg(root, 'Schedule disabled.', 'success');
+  };
+
+}
+
+function showPcpMsg(root, msg, type) {
+  const el = root.querySelector('#pcp-msg');
+  el.textContent = msg;
+  el.style.color = type === 'error' ? 'var(--danger)' : 'var(--success, #4caf50)';
+}
+
+function showCatalogMsg(root, msg, type) {
+  const el = root.querySelector('#catalog-refresh-msg');
+  el.className = `alert alert-${type}`;
+  el.textContent = msg;
+  el.style.display = 'block';
+  setTimeout(() => { el.style.display = 'none'; }, 4000);
+}
+
+async function loadCatalogSchedule(root) {
+  try {
+    const cfg = await api('GET', '/api/portals/catalog/schedule');
+    if (cfg?.enabled && cfg?.value) {
+      root.querySelector('#catalog-schedule-input').value = cfg.value;
+    }
+  } catch { /* ignore */ }
 }
 
 async function loadPortals(root) {
@@ -667,23 +783,49 @@ async function loadPortals(root) {
       tbody.innerHTML = `<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--muted)">No portals. Add one above.</td></tr>`;
       return;
     }
-    tbody.innerHTML = portals.map(p => `
-      <tr>
-        <td><strong>${escHtml(p.name)}</strong></td>
-        <td class="text-muted">${escHtml(p.provider || '—')}</td>
-        <td>${p.careers_url ? `<a href="${escHtml(p.careers_url)}" target="_blank" rel="noopener" style="color:var(--accent);font-size:12px">${escHtml(p.careers_url)}</a>` : '<span class="text-muted">—</span>'}</td>
-        <td><span class="badge ${p.auth_type === 'none' ? 'badge-default' : 'badge-info'}">${escHtml(p.auth_type || 'none')}</span></td>
-        <td><span class="badge ${p.enabled ? 'badge-success' : 'badge-default'}">${p.enabled ? 'enabled' : 'disabled'}</span></td>
+
+    const methodBadge = (cfg) => {
+      const m = cfg?.method || 'unknown';
+      const colors = { json_api: '#2196f3', rss_feed: '#ff9800', html_scrape: '#9c27b0', playwright: '#e91e63', ats: '#607d8b', unsupported: '#f44336', unknown: '#9e9e9e' };
+      const bg = colors[m] || '#9e9e9e';
+      return `<span style="background:${bg};color:#fff;font-size:10px;padding:2px 6px;border-radius:3px;font-weight:600">${m}</span>`;
+    };
+    const statusBadge = (status) => {
+      const cls = status === 'ok' ? 'badge-success' : status === 'failing' ? 'badge-danger' : 'badge-default';
+      return `<span class="badge ${cls}">${status || 'unknown'}</span>`;
+    };
+    const fmtDate = (d) => d ? new Date(d).toLocaleDateString() : '—';
+
+    tbody.innerHTML = portals.map(p => {
+      const cfg = typeof p.search_config === 'string' ? JSON.parse(p.search_config) : (p.search_config || {});
+      return `
+      <tr class="portal-row" data-id="${p.id}" style="cursor:pointer" title="Click to view/edit search config">
+        <td><strong>${escHtml(p.name)}</strong><span class="text-muted" style="font-size:11px;margin-left:6px">${p.enabled ? '' : '(disabled)'}</span></td>
+        <td class="text-muted" style="font-size:12px">${escHtml(p.provider || '—')}</td>
+        <td>${methodBadge(cfg)}</td>
+        <td>${statusBadge(p.catalog_status)}</td>
+        <td class="text-muted" style="font-size:12px">${fmtDate(p.last_catalog_refresh)}</td>
         <td style="white-space:nowrap">
           <button class="btn btn-secondary btn-sm portal-edit-btn" data-id="${p.id}">Edit</button>
           <button class="btn btn-danger btn-sm portal-delete-btn" data-id="${p.id}" style="margin-left:4px">✕</button>
         </td>
-      </tr>
-    `).join('');
+      </tr>`;
+    }).join('');
+
+    // Row click → open catalog panel
+    tbody.querySelectorAll('.portal-row').forEach(row => {
+      row.onclick = (e) => {
+        if (e.target.tagName === 'BUTTON') return;
+        const portal = portals.find(p => p.id == row.dataset.id);
+        if (!portal) return;
+        openCatalogPanel(root, portal);
+      };
+    });
 
     // Bind edit
     tbody.querySelectorAll('.portal-edit-btn').forEach(btn => {
-      btn.onclick = () => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
         const portal = portals.find(p => p.id == btn.dataset.id);
         if (!portal) return;
         root.querySelector('#portal-form-wrap').style.display = 'block';
@@ -698,7 +840,8 @@ async function loadPortals(root) {
     });
     // Bind delete
     tbody.querySelectorAll('.portal-delete-btn').forEach(btn => {
-      btn.onclick = async () => {
+      btn.onclick = async (e) => {
+        e.stopPropagation();
         if (!confirm('Delete this portal?')) return;
         await api('DELETE', `/api/portals/${btn.dataset.id}`);
         loadPortals(root);
@@ -707,6 +850,19 @@ async function loadPortals(root) {
   } catch (err) {
     tbody.innerHTML = `<tr><td colspan="6" style="color:var(--danger);padding:12px">Failed to load portals: ${err.message}</td></tr>`;
   }
+}
+
+function openCatalogPanel(root, portal) {
+  const panel = root.querySelector('#portal-catalog-panel');
+  const cfg = typeof portal.search_config === 'string' ? JSON.parse(portal.search_config) : (portal.search_config || {});
+  root.querySelector('#pcp-id').value = portal.id;
+  root.querySelector('#pcp-title').textContent = `Search Config — ${portal.name}`;
+  root.querySelector('#pcp-method').value = cfg.method || 'unknown';
+  root.querySelector('#pcp-url').value = cfg.url_template || '';
+  root.querySelector('#pcp-notes').value = cfg.notes || '';
+  root.querySelector('#pcp-msg').textContent = '';
+  panel.style.display = 'block';
+  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 // ── Listings Tab ──────────────────────────────────────────────────────────────

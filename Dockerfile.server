@@ -6,9 +6,11 @@ RUN bun install --production
 FROM oven/bun:1-slim
 WORKDIR /app
 COPY --from=builder /app/node_modules ./node_modules
-RUN bunx playwright install-deps chromium
-ENV PLAYWRIGHT_BROWSERS_PATH=/usr/lib/chromium
-ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
+# Install system Chromium for Playwright browser scraping
+RUN apt-get update && apt-get install -y chromium --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 COPY packages/server/src/ ./packages/server/src/
 COPY packages/server/package.json ./packages/server/
 COPY modes/ ./modes/

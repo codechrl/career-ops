@@ -2,6 +2,7 @@ import { initDatabase, dbGet } from './database.mjs';
 import { initAuth } from './auth.mjs';
 import { initExpress } from './express.mjs';
 import { listLLMKeys } from '../models/llm-key.mjs';
+import { initScheduler, initCatalogScheduler } from '../services/scan-scheduler.mjs';
 
 export async function initLoaders() {
   await initDatabase();
@@ -21,4 +22,6 @@ export async function initLoaders() {
   }
   await initExpress();
   await initAuth();
+  await initScheduler();
+  await initCatalogScheduler();
 }

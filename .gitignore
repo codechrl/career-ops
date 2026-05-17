@@ -48,3 +48,7 @@ package-lock.json
 
 
 data-personal/*
+CLAUDE.md
+filters.toml
+rtk-rewrite.json
+copilot-instructions.md

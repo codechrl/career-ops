@@ -40,4 +40,23 @@ export function setLLM(name) {
   _provider = p;
 }
 
+/**
+ * Load LLM for a specific process key (reads from settings table).
+ * Falls back to global getLLM() if no config found.
+ * @param {string} processKey  e.g. 'cv', 'scan', 'portal-discovery'
+ * @returns {Promise<LlmProvider>}
+ */
+export async function getLLMForProcess(processKey) {
+  try {
+    const { dbGet } = await import('../loaders/database.mjs');
+    const row = await dbGet('SELECT value FROM settings WHERE key = ?', [`llm_config_${processKey}`]);
+    if (row) {
+      const cfg = JSON.parse(row.value);
+      const p = providers.get((cfg.provider || '').toLowerCase());
+      if (p) return p;
+    }
+  } catch { /* fall through to default */ }
+  return getLLM();
+}
+
 export { providers };
