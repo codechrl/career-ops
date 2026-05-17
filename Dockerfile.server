@@ -1,0 +1,22 @@
+FROM oven/bun:1 AS builder
+WORKDIR /app
+COPY packages/server/package.json ./
+RUN bun install --production
+
+FROM oven/bun:1-slim
+WORKDIR /app
+COPY --from=builder /app/node_modules ./node_modules
+RUN bunx playwright install-deps chromium
+ENV PLAYWRIGHT_BROWSERS_PATH=/usr/lib/chromium
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
+COPY packages/server/src/ ./packages/server/src/
+COPY packages/server/package.json ./packages/server/
+COPY modes/ ./modes/
+COPY providers/ ./providers/
+COPY config/ ./config/
+COPY cv.md ./cv.md
+COPY portals.yml ./portals.yml
+VOLUME ["/app/data", "/app/reports", "/app/config", "/app/output"]
+EXPOSE 3000
+ENV NODE_ENV=production
+CMD ["bun", "packages/server/src/index.mjs"]
