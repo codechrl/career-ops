@@ -1,6 +1,9 @@
 import { api, apiForm } from '../api.js';
+import { paged, pagerHtml, bindPager, PAGE_SIZE } from '../paginate.js';
 
 let cvState = { cvText: '', summary: '', keywords: '' };
+let _allPortals = []; let _portalsPage = 1;
+let _allTargets = []; let _targetsPage = 1;
 
 export function renderJob(root) {
   root.innerHTML = `
@@ -169,6 +172,7 @@ export function renderJob(root) {
           </tbody>
         </table>
       </div>
+      <div id="portals-pager"></div>
 
       <!-- Search config detail panel (shown on row click) -->
       <div id="portal-catalog-panel" class="card" style="display:none;margin-top:12px">
@@ -473,89 +477,100 @@ function resetTargetForm(root) {
 
 async function loadTargets(root) {
   const wrap = root.querySelector('#targets-table-wrap');
+  wrap.innerHTML = `<div class="loading-row"><span class="spinner"></span> Loading…</div>`;
   try {
-    const targets = await api('GET', '/api/job-target');
-    if (!targets.length) {
-      wrap.innerHTML = `<div class="alert alert-info">No job targets saved yet. Fill the form above to create one.</div>`;
-      return;
-    }
-    wrap.innerHTML = `
-      <div class="table-wrap">
-        <table class="data-table">
-          <thead><tr><th>Role</th><th>Industries</th><th>Location</th><th>Criteria</th><th>Status</th><th></th></tr></thead>
-          <tbody>
-            ${targets.map(t => `
-              <tr>
-                <td><strong>${escHtml(t.target_role)}</strong></td>
-                <td class="text-muted" style="font-size:12px">${escHtml(t.industries || '—')}</td>
-                <td class="text-muted" style="font-size:12px">${escHtml(t.target_location || '—')}</td>
-                <td class="text-muted" style="font-size:12px">${(t.metrics || []).length} criteria</td>
-                <td>${t.is_active ? '<span class="badge badge-success">Active</span>' : '<span class="badge badge-default">Inactive</span>'}</td>
-                <td style="white-space:nowrap;text-align:right">
-                  <button class="btn btn-secondary btn-sm target-activate-btn" data-id="${t.id}" style="margin-right:4px">${t.is_active ? 'Deactivate' : 'Activate'}</button>
-                  <button class="btn btn-secondary btn-sm target-evaluate-btn" data-id="${t.id}" style="margin-right:4px">Evaluate</button>
-                  <button class="btn btn-secondary btn-sm target-edit-btn" data-id="${t.id}" style="margin-right:4px">Edit</button>
-                  <button class="btn btn-danger btn-sm target-delete-btn" data-id="${t.id}">Delete</button>
-                </td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      </div>
-    `;
-
-    wrap.querySelectorAll('.target-activate-btn').forEach(btn => {
-      btn.onclick = async () => {
-        await api('PATCH', `/api/job-target/${btn.dataset.id}/activate`, {});
-        loadTargets(root);
-      };
-    });
-
-    wrap.querySelectorAll('.target-edit-btn').forEach(btn => {
-      const t = targets.find(x => String(x.id) === btn.dataset.id);
-      if (!t) return;
-      btn.onclick = () => {
-        root.querySelector('#t-id').value = t.id;
-        root.querySelector('#t-role').value = t.target_role;
-        root.querySelector('#t-industries').value = t.industries || '';
-        root.querySelector('#t-location').value = t.target_location || '';
-        root.querySelector('#t-set-active').checked = !!t.is_active;
-        root.querySelector('#target-form-title').textContent = `Edit: ${t.target_role}`;
-        root.querySelector('#target-form-cancel').style.display = 'inline-flex';
-        const list = root.querySelector('#metrics-list');
-        list.innerHTML = '';
-        const mets = t.metrics || [];
-        if (!mets.length) mets.push('');
-        mets.forEach(m => {
-          const row = document.createElement('div');
-          row.className = 'metric-row';
-          row.style.cssText = 'display:flex;gap:6px';
-          row.innerHTML = `<input type="text" class="metric-input" value="${escHtml(m)}" style="flex:1"><button type="button" class="btn btn-danger btn-sm metric-remove">✕</button>`;
-          row.querySelector('.metric-remove').onclick = () => { row.remove(); updateRemoveButtons(root); };
-          list.appendChild(row);
-        });
-        updateRemoveButtons(root);
-        root.querySelector('#target-form-wrap').scrollIntoView({ behavior: 'smooth' });
-      };
-    });
-
-    wrap.querySelectorAll('.target-delete-btn').forEach(btn => {
-      btn.onclick = async () => {
-        const t = targets.find(x => String(x.id) === btn.dataset.id);
-        if (!confirm(`Delete target "${t?.target_role}"?`)) return;
-        await api('DELETE', `/api/job-target/${btn.dataset.id}`);
-        loadTargets(root);
-      };
-    });
-
-    wrap.querySelectorAll('.target-evaluate-btn').forEach(btn => {
-      const t = targets.find(x => String(x.id) === btn.dataset.id);
-      if (!t) return;
-      btn.onclick = () => runEvaluation(root, t);
-    });
+    _allTargets = await api('GET', '/api/job-target');
+    _targetsPage = 1;
+    renderTargetPage(root);
   } catch (err) {
     wrap.innerHTML = `<div class="alert alert-error">Failed to load: ${err.message}</div>`;
   }
+}
+
+function renderTargetPage(root) {
+  const wrap = root.querySelector('#targets-table-wrap');
+  if (!_allTargets.length) {
+    wrap.innerHTML = `<div class="alert alert-info">No job targets saved yet. Fill the form above to create one.</div>`;
+    return;
+  }
+  const { slice, page, pages, total } = paged(_allTargets, _targetsPage);
+  wrap.innerHTML = `
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Role</th><th>Industries</th><th>Location</th><th>Criteria</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+          ${slice.map(t => `
+            <tr>
+              <td><strong>${escHtml(t.target_role)}</strong></td>
+              <td class="text-muted" style="font-size:12px">${escHtml(t.industries || '—')}</td>
+              <td class="text-muted" style="font-size:12px">${escHtml(t.target_location || '—')}</td>
+              <td class="text-muted" style="font-size:12px">${(t.metrics || []).length} criteria</td>
+              <td>${t.is_active ? '<span class="badge badge-success">Active</span>' : '<span class="badge badge-default">Inactive</span>'}</td>
+              <td style="white-space:nowrap;text-align:right">
+                <button class="btn btn-secondary btn-sm target-activate-btn" data-id="${t.id}" style="margin-right:4px">${t.is_active ? 'Deactivate' : 'Activate'}</button>
+                <button class="btn btn-secondary btn-sm target-evaluate-btn" data-id="${t.id}" style="margin-right:4px">Evaluate</button>
+                <button class="btn btn-secondary btn-sm target-edit-btn" data-id="${t.id}" style="margin-right:4px">Edit</button>
+                <button class="btn btn-danger btn-sm target-delete-btn" data-id="${t.id}">Delete</button>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+    ${pagerHtml(page, pages, total)}
+  `;
+
+  wrap.querySelectorAll('.target-activate-btn').forEach(btn => {
+    btn.onclick = async () => {
+      await api('PATCH', `/api/job-target/${btn.dataset.id}/activate`, {});
+      loadTargets(root);
+    };
+  });
+
+  wrap.querySelectorAll('.target-edit-btn').forEach(btn => {
+    const t = _allTargets.find(x => String(x.id) === btn.dataset.id);
+    if (!t) return;
+    btn.onclick = () => {
+      root.querySelector('#t-id').value = t.id;
+      root.querySelector('#t-role').value = t.target_role;
+      root.querySelector('#t-industries').value = t.industries || '';
+      root.querySelector('#t-location').value = t.target_location || '';
+      root.querySelector('#t-set-active').checked = !!t.is_active;
+      root.querySelector('#target-form-title').textContent = `Edit: ${t.target_role}`;
+      root.querySelector('#target-form-cancel').style.display = 'inline-flex';
+      const list = root.querySelector('#metrics-list');
+      list.innerHTML = '';
+      const mets = t.metrics || [];
+      if (!mets.length) mets.push('');
+      mets.forEach(m => {
+        const row = document.createElement('div');
+        row.className = 'metric-row';
+        row.style.cssText = 'display:flex;gap:6px';
+        row.innerHTML = `<input type="text" class="metric-input" value="${escHtml(m)}" style="flex:1"><button type="button" class="btn btn-danger btn-sm metric-remove">✕</button>`;
+        row.querySelector('.metric-remove').onclick = () => { row.remove(); updateRemoveButtons(root); };
+        list.appendChild(row);
+      });
+      updateRemoveButtons(root);
+      root.querySelector('#target-form-wrap').scrollIntoView({ behavior: 'smooth' });
+    };
+  });
+
+  wrap.querySelectorAll('.target-delete-btn').forEach(btn => {
+    btn.onclick = async () => {
+      const t = _allTargets.find(x => String(x.id) === btn.dataset.id);
+      if (!confirm(`Delete target "${t?.target_role}"?`)) return;
+      await api('DELETE', `/api/job-target/${btn.dataset.id}`);
+      loadTargets(root);
+    };
+  });
+
+  wrap.querySelectorAll('.target-evaluate-btn').forEach(btn => {
+    const t = _allTargets.find(x => String(x.id) === btn.dataset.id);
+    if (!t) return;
+    btn.onclick = () => runEvaluation(root, t);
+  });
+
+  bindPager(wrap, () => { _targetsPage--; renderTargetPage(root); }, () => { _targetsPage++; renderTargetPage(root); });
 }
 
 async function runEvaluation(root, target) {
@@ -777,79 +792,95 @@ async function loadCatalogSchedule(root) {
 
 async function loadPortals(root) {
   const tbody = root.querySelector('#portals-tbody');
+  tbody.innerHTML = `<tr><td colspan="6"><div class="loading-row"><span class="spinner"></span> Loading…</div></td></tr>`;
   try {
-    const portals = await api('GET', '/api/portals');
-    if (!portals.length) {
-      tbody.innerHTML = `<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--muted)">No portals. Add one above.</td></tr>`;
-      return;
-    }
-
-    const methodBadge = (cfg) => {
-      const m = cfg?.method || 'unknown';
-      const colors = { json_api: '#2196f3', rss_feed: '#ff9800', html_scrape: '#9c27b0', playwright: '#e91e63', ats: '#607d8b', unsupported: '#f44336', unknown: '#9e9e9e' };
-      const bg = colors[m] || '#9e9e9e';
-      return `<span style="background:${bg};color:#fff;font-size:10px;padding:2px 6px;border-radius:3px;font-weight:600">${m}</span>`;
-    };
-    const statusBadge = (status) => {
-      const cls = status === 'ok' ? 'badge-success' : status === 'failing' ? 'badge-danger' : 'badge-default';
-      return `<span class="badge ${cls}">${status || 'unknown'}</span>`;
-    };
-    const fmtDate = (d) => d ? new Date(d).toLocaleDateString() : '—';
-
-    tbody.innerHTML = portals.map(p => {
-      const cfg = typeof p.search_config === 'string' ? JSON.parse(p.search_config) : (p.search_config || {});
-      return `
-      <tr class="portal-row" data-id="${p.id}" style="cursor:pointer" title="Click to view/edit search config">
-        <td><strong>${escHtml(p.name)}</strong><span class="text-muted" style="font-size:11px;margin-left:6px">${p.enabled ? '' : '(disabled)'}</span></td>
-        <td class="text-muted" style="font-size:12px">${escHtml(p.provider || '—')}</td>
-        <td>${methodBadge(cfg)}</td>
-        <td>${statusBadge(p.catalog_status)}</td>
-        <td class="text-muted" style="font-size:12px">${fmtDate(p.last_catalog_refresh)}</td>
-        <td style="white-space:nowrap">
-          <button class="btn btn-secondary btn-sm portal-edit-btn" data-id="${p.id}">Edit</button>
-          <button class="btn btn-danger btn-sm portal-delete-btn" data-id="${p.id}" style="margin-left:4px">✕</button>
-        </td>
-      </tr>`;
-    }).join('');
-
-    // Row click → open catalog panel
-    tbody.querySelectorAll('.portal-row').forEach(row => {
-      row.onclick = (e) => {
-        if (e.target.tagName === 'BUTTON') return;
-        const portal = portals.find(p => p.id == row.dataset.id);
-        if (!portal) return;
-        openCatalogPanel(root, portal);
-      };
-    });
-
-    // Bind edit
-    tbody.querySelectorAll('.portal-edit-btn').forEach(btn => {
-      btn.onclick = (e) => {
-        e.stopPropagation();
-        const portal = portals.find(p => p.id == btn.dataset.id);
-        if (!portal) return;
-        root.querySelector('#portal-form-wrap').style.display = 'block';
-        root.querySelector('#portal-form-title').textContent = 'Edit Portal';
-        root.querySelector('#pf-id').value = portal.id;
-        root.querySelector('#pf-name').value = portal.name;
-        root.querySelector('#pf-provider').value = portal.provider || '';
-        root.querySelector('#pf-url').value = portal.careers_url || '';
-        root.querySelector('#pf-auth').value = portal.auth_type || 'none';
-        root.querySelector('#pf-enabled').value = String(portal.enabled ?? 1);
-      };
-    });
-    // Bind delete
-    tbody.querySelectorAll('.portal-delete-btn').forEach(btn => {
-      btn.onclick = async (e) => {
-        e.stopPropagation();
-        if (!confirm('Delete this portal?')) return;
-        await api('DELETE', `/api/portals/${btn.dataset.id}`);
-        loadPortals(root);
-      };
-    });
+    _allPortals = await api('GET', '/api/portals');
+    _portalsPage = 1;
+    renderPortalPage(root);
   } catch (err) {
     tbody.innerHTML = `<tr><td colspan="6" style="color:var(--danger);padding:12px">Failed to load portals: ${err.message}</td></tr>`;
   }
+}
+
+function renderPortalPage(root) {
+  const tbody = root.querySelector('#portals-tbody');
+  const pagerEl = root.querySelector('#portals-pager');
+
+  if (!_allPortals.length) {
+    tbody.innerHTML = `<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--muted)">No portals. Add one above.</td></tr>`;
+    pagerEl.innerHTML = '';
+    return;
+  }
+
+  const { slice, page, pages, total } = paged(_allPortals, _portalsPage);
+
+  const methodBadge = (cfg) => {
+    const m = cfg?.method || 'unknown';
+    const colors = { json_api: '#2196f3', rss_feed: '#ff9800', html_scrape: '#9c27b0', playwright: '#e91e63', ats: '#607d8b', unsupported: '#f44336', unknown: '#9e9e9e' };
+    const bg = colors[m] || '#9e9e9e';
+    return `<span style="background:${bg};color:#fff;font-size:10px;padding:2px 6px;border-radius:3px;font-weight:600">${m}</span>`;
+  };
+  const statusBadge = (status) => {
+    const cls = status === 'ok' ? 'badge-success' : status === 'failing' ? 'badge-danger' : 'badge-default';
+    return `<span class="badge ${cls}">${status || 'unknown'}</span>`;
+  };
+  const fmtDate = (d) => d ? new Date(d).toLocaleDateString() : '—';
+
+  tbody.innerHTML = slice.map(p => {
+    const cfg = typeof p.search_config === 'string' ? JSON.parse(p.search_config) : (p.search_config || {});
+    return `
+    <tr class="portal-row" data-id="${p.id}" style="cursor:pointer" title="Click to view/edit search config">
+      <td><strong>${escHtml(p.name)}</strong><span class="text-muted" style="font-size:11px;margin-left:6px">${p.enabled ? '' : '(disabled)'}</span></td>
+      <td class="text-muted" style="font-size:12px">${escHtml(p.provider || '—')}</td>
+      <td>${methodBadge(cfg)}</td>
+      <td>${statusBadge(p.catalog_status)}</td>
+      <td class="text-muted" style="font-size:12px">${fmtDate(p.last_catalog_refresh)}</td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-secondary btn-sm portal-edit-btn" data-id="${p.id}">Edit</button>
+        <button class="btn btn-danger btn-sm portal-delete-btn" data-id="${p.id}" style="margin-left:4px">✕</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  // Row click → open catalog panel
+  tbody.querySelectorAll('.portal-row').forEach(row => {
+    row.onclick = (e) => {
+      if (e.target.tagName === 'BUTTON') return;
+      const portal = _allPortals.find(p => p.id == row.dataset.id);
+      if (!portal) return;
+      openCatalogPanel(root, portal);
+    };
+  });
+
+  // Bind edit
+  tbody.querySelectorAll('.portal-edit-btn').forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const portal = _allPortals.find(p => p.id == btn.dataset.id);
+      if (!portal) return;
+      root.querySelector('#portal-form-wrap').style.display = 'block';
+      root.querySelector('#portal-form-title').textContent = 'Edit Portal';
+      root.querySelector('#pf-id').value = portal.id;
+      root.querySelector('#pf-name').value = portal.name;
+      root.querySelector('#pf-provider').value = portal.provider || '';
+      root.querySelector('#pf-url').value = portal.careers_url || '';
+      root.querySelector('#pf-auth').value = portal.auth_type || 'none';
+      root.querySelector('#pf-enabled').value = String(portal.enabled ?? 1);
+    };
+  });
+
+  // Bind delete
+  tbody.querySelectorAll('.portal-delete-btn').forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      if (!confirm('Delete this portal?')) return;
+      await api('DELETE', `/api/portals/${btn.dataset.id}`);
+      loadPortals(root);
+    };
+  });
+
+  pagerEl.innerHTML = pagerHtml(page, pages, total);
+  bindPager(pagerEl, () => { _portalsPage--; renderPortalPage(root); }, () => { _portalsPage++; renderPortalPage(root); });
 }
 
 function openCatalogPanel(root, portal) {

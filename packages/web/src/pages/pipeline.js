@@ -1,4 +1,5 @@
 import { api } from '../api.js';
+import { paged, pagerHtml, bindPager } from '../paginate.js';
 
 export function renderPipeline(root) {
   root.innerHTML = `
@@ -272,122 +273,139 @@ export function renderPipeline(root) {
   };
 
   // ── Scan runs table ───────────────────────────────────────────────────────
+  let _scanRuns = []; let _scanRunsPage = 1;
+  let _catalogRuns = []; let _catalogRunsPage = 1;
+
   async function loadScanRuns() {
     const el = root.querySelector('#scan-runs-list');
     try {
-      const runs = await api('GET', '/api/scan/runs');
-      if (!runs.length) {
-        el.innerHTML = `<p style="color:var(--muted);padding:16px 0;font-size:13px">No scan runs yet. Start a scan to see results here.</p>`;
-        return;
-      }
-      el.innerHTML = `
-        <div class="table-wrap">
-          <table class="data-table">
-            <thead><tr>
-              <th>#</th><th>Started</th><th>Trigger</th><th>New</th><th>Skip</th><th>Err</th><th>Status</th><th></th>
-            </tr></thead>
-            <tbody>${runs.map(r => `
-              <tr>
-                <td style="font-size:11px;color:var(--muted)">#${r.id}</td>
-                <td style="font-size:12px">${fmtDate(r.started_at)}</td>
-                <td><span class="badge badge-new">${escHtml(r.trigger)}</span></td>
-                <td style="color:var(--success,#0c6);font-weight:600">${r.new_count}</td>
-                <td style="color:var(--muted)">${r.skipped_count}</td>
-                <td style="color:${r.error_count ? '#ff4f6d' : 'var(--muted)'}">${r.error_count}</td>
-                <td>${statusBadge(r.status)}</td>
-                <td>${r.log ? `<button class="btn btn-secondary btn-sm run-log-btn" data-id="${r.id}">Log</button>` : ''}${r.status === 'running' ? ` <button class="btn btn-danger btn-sm run-cancel-btn" data-id="${r.id}">Stop</button>` : ''}</td>
-              </tr>
-              <tr class="run-log-row" id="runlog-${r.id}" style="display:none">
-                <td colspan="8">
-                  <pre style="background:var(--surface2,#111);padding:10px;border-radius:4px;font-size:11px;white-space:pre-wrap;max-height:200px;overflow-y:auto">${escHtml(r.log || '')}</pre>
-                </td>
-              </tr>`).join('')}
-            </tbody>
-          </table>
-        </div>`;
-
-      el.querySelectorAll('.run-log-btn').forEach(btn => {
-        btn.onclick = () => {
-          const row = root.querySelector(`#runlog-${btn.dataset.id}`);
-          row.style.display = row.style.display === 'none' ? '' : 'none';
-        };
-      });
-      el.querySelectorAll('.run-cancel-btn').forEach(btn => {
-        btn.onclick = async () => {
-          btn.disabled = true;
-          await fetch(`/api/scan/runs/${btn.dataset.id}`, {
-            method: 'DELETE',
-            headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` },
-          }).catch(() => {});
-          setTimeout(loadScanRuns, 800);
-        };
-      });
+      _scanRuns = await api('GET', '/api/scan/runs');
+      _scanRunsPage = 1;
+      renderScanRunsPage(el);
     } catch (err) {
       el.innerHTML = `<div class="alert alert-error">Error: ${escHtml(err.message)}</div>`;
     }
   }
 
+  function renderScanRunsPage(el) {
+    if (!_scanRuns.length) {
+      el.innerHTML = `<p style="color:var(--muted);padding:16px 0;font-size:13px">No scan runs yet. Start a scan to see results here.</p>`;
+      return;
+    }
+    const { slice, page, pages, total } = paged(_scanRuns, _scanRunsPage);
+    el.innerHTML = `
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead><tr>
+            <th>#</th><th>Started</th><th>Trigger</th><th>New</th><th>Skip</th><th>Err</th><th>Status</th><th></th>
+          </tr></thead>
+          <tbody>${slice.map(r => `
+            <tr>
+              <td style="font-size:11px;color:var(--muted)">#${r.id}</td>
+              <td style="font-size:12px">${fmtDate(r.started_at)}</td>
+              <td><span class="badge badge-new">${escHtml(r.trigger)}</span></td>
+              <td style="color:var(--success,#0c6);font-weight:600">${r.new_count}</td>
+              <td style="color:var(--muted)">${r.skipped_count}</td>
+              <td style="color:${r.error_count ? '#ff4f6d' : 'var(--muted)'}">${r.error_count}</td>
+              <td>${statusBadge(r.status)}</td>
+              <td>${r.log ? `<button class="btn btn-secondary btn-sm run-log-btn" data-id="${r.id}">Log</button>` : ''}${r.status === 'running' ? ` <button class="btn btn-danger btn-sm run-cancel-btn" data-id="${r.id}">Stop</button>` : ''}</td>
+            </tr>
+            <tr class="run-log-row" id="runlog-${r.id}" style="display:none">
+              <td colspan="8">
+                <pre style="background:var(--surface2,#111);padding:10px;border-radius:4px;font-size:11px;white-space:pre-wrap;max-height:200px;overflow-y:auto">${escHtml(r.log || '')}</pre>
+              </td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+      ${pagerHtml(page, pages, total)}`;
+
+    el.querySelectorAll('.run-log-btn').forEach(btn => {
+      btn.onclick = () => {
+        const row = root.querySelector(`#runlog-${btn.dataset.id}`);
+        row.style.display = row.style.display === 'none' ? '' : 'none';
+      };
+    });
+    el.querySelectorAll('.run-cancel-btn').forEach(btn => {
+      btn.onclick = async () => {
+        btn.disabled = true;
+        await fetch(`/api/scan/runs/${btn.dataset.id}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+        }).catch(() => {});
+        setTimeout(loadScanRuns, 800);
+      };
+    });
+    bindPager(el, () => { _scanRunsPage--; renderScanRunsPage(el); }, () => { _scanRunsPage++; renderScanRunsPage(el); });
+  }
   loadScanRuns();
 
   // ── Catalog Refresh Runs ─────────────────────────────────────────────────
   async function loadCatalogRuns() {
     const el = root.querySelector('#catalog-runs-list');
     try {
-      const runs = await api('GET', '/api/portals/catalog/runs');
-      if (!runs.length) {
-        el.innerHTML = `<p style="color:var(--muted);padding:16px 0;font-size:13px">No catalog refresh runs yet.</p>`;
-        return;
-      }
-      el.innerHTML = `
-        <div class="table-wrap">
-          <table class="data-table">
-            <thead><tr>
-              <th>#</th><th>Started</th><th>Trigger</th><th>OK</th><th>Failing</th><th>Total</th><th>Status</th><th></th>
-            </tr></thead>
-            <tbody>${runs.map(r => `
-              <tr>
-                <td style="font-size:11px;color:var(--muted)">#${r.id}</td>
-                <td style="font-size:12px">${fmtDate(r.started_at)}</td>
-                <td><span class="badge badge-new">${escHtml(r.trigger)}</span></td>
-                <td style="color:var(--success,#0c6);font-weight:600">${r.ok_count}</td>
-                <td style="color:${r.failing_count ? '#ff4f6d' : 'var(--muted)'}">${r.failing_count}</td>
-                <td style="color:var(--muted)">${r.total_count}</td>
-                <td>${statusBadge(r.status)}</td>
-                <td>${r.log ? `<button class="btn btn-secondary btn-sm crun-log-btn" data-id="${r.id}">Log</button>` : ''}${r.status === 'running' ? ` <button class="btn btn-danger btn-sm crun-cancel-btn" data-id="${r.id}">&#9632; Cancel</button>` : ''}</td>
-              </tr>
-              <tr class="run-log-row" id="crunlog-${r.id}" style="display:none">
-                <td colspan="8">
-                  <pre style="background:var(--surface2,#111);padding:10px;border-radius:4px;font-size:11px;white-space:pre-wrap;max-height:200px;overflow-y:auto">${escHtml(r.log || '')}</pre>
-                </td>
-              </tr>`).join('')}
-            </tbody>
-          </table>
-        </div>`;
-
-      el.querySelectorAll('.crun-log-btn').forEach(btn => {
-        btn.onclick = () => {
-          const row = root.querySelector(`#crunlog-${btn.dataset.id}`);
-          row.style.display = row.style.display === 'none' ? '' : 'none';
-        };
-      });
-
-      el.querySelectorAll('.crun-cancel-btn').forEach(btn => {
-        btn.onclick = async () => {
-          btn.disabled = true;
-          btn.textContent = 'Cancelling…';
-          try {
-            await api('POST', `/api/portals/catalog/runs/${btn.dataset.id}/cancel`);
-            setTimeout(loadCatalogRuns, 1500);
-          } catch (err) {
-            btn.disabled = false;
-            btn.textContent = '■ Cancel';
-            alert('Cancel failed: ' + err.message);
-          }
-        };
-      });
+      _catalogRuns = await api('GET', '/api/portals/catalog/runs');
+      _catalogRunsPage = 1;
+      renderCatalogRunsPage(el);
     } catch (err) {
       el.innerHTML = `<div class="alert alert-error">Error: ${escHtml(err.message)}</div>`;
     }
+  }
+
+  function renderCatalogRunsPage(el) {
+    if (!_catalogRuns.length) {
+      el.innerHTML = `<p style="color:var(--muted);padding:16px 0;font-size:13px">No catalog refresh runs yet.</p>`;
+      return;
+    }
+    const { slice, page, pages, total } = paged(_catalogRuns, _catalogRunsPage);
+    el.innerHTML = `
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead><tr>
+            <th>#</th><th>Started</th><th>Trigger</th><th>OK</th><th>Failing</th><th>Total</th><th>Status</th><th></th>
+          </tr></thead>
+          <tbody>${slice.map(r => `
+            <tr>
+              <td style="font-size:11px;color:var(--muted)">#${r.id}</td>
+              <td style="font-size:12px">${fmtDate(r.started_at)}</td>
+              <td><span class="badge badge-new">${escHtml(r.trigger)}</span></td>
+              <td style="color:var(--success,#0c6);font-weight:600">${r.ok_count}</td>
+              <td style="color:${r.failing_count ? '#ff4f6d' : 'var(--muted)'}">${r.failing_count}</td>
+              <td style="color:var(--muted)">${r.total_count}</td>
+              <td>${statusBadge(r.status)}</td>
+              <td>${r.log ? `<button class="btn btn-secondary btn-sm crun-log-btn" data-id="${r.id}">Log</button>` : ''}${r.status === 'running' ? ` <button class="btn btn-danger btn-sm crun-cancel-btn" data-id="${r.id}">&#9632; Cancel</button>` : ''}</td>
+            </tr>
+            <tr class="run-log-row" id="crunlog-${r.id}" style="display:none">
+              <td colspan="8">
+                <pre style="background:var(--surface2,#111);padding:10px;border-radius:4px;font-size:11px;white-space:pre-wrap;max-height:200px;overflow-y:auto">${escHtml(r.log || '')}</pre>
+              </td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+      ${pagerHtml(page, pages, total)}`;
+
+    el.querySelectorAll('.crun-log-btn').forEach(btn => {
+      btn.onclick = () => {
+        const row = root.querySelector(`#crunlog-${btn.dataset.id}`);
+        row.style.display = row.style.display === 'none' ? '' : 'none';
+      };
+    });
+    el.querySelectorAll('.crun-cancel-btn').forEach(btn => {
+      btn.onclick = async () => {
+        btn.disabled = true;
+        btn.textContent = 'Cancelling…';
+        try {
+          await api('POST', `/api/portals/catalog/runs/${btn.dataset.id}/cancel`);
+          setTimeout(loadCatalogRuns, 1500);
+        } catch (err) {
+          btn.disabled = false;
+          btn.textContent = '■ Cancel';
+          alert('Cancel failed: ' + err.message);
+        }
+      };
+    });
+    bindPager(el, () => { _catalogRunsPage--; renderCatalogRunsPage(el); }, () => { _catalogRunsPage++; renderCatalogRunsPage(el); });
   }
 }
 
