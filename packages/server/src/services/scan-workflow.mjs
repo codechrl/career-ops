@@ -194,13 +194,13 @@ export class ScanWorkflow {
         const byUrl = new Map(evalResults.map(r => [r.url, r.scores]));
         for (const job of group) {
           const scores = byUrl.get(job.url);
-          job.scores = scores || {
-            role_score: 0, industry_score: 0, location_score: 0,
-            preference_score: 0, overall_score: 0, preference_scores: {},
-            recommendation: 'Research more', recommendation_reason: 'No result returned.',
-            next_action: 'Reach out', next_action_detail: '',
-          };
-          if (scores) {
+          if (!scores) {
+            job._evalFailed = true;
+            this.emit('warning',
+              `[Evaluate] no result for "${job.title}" — skipping save`,
+              { agent: 'evaluate' });
+          } else {
+            job.scores = scores;
             this.emit('progress',
               `[Evaluate] "${job.title}" → score=${scores.overall_score} [${scores.recommendation}]`,
               { agent: 'evaluate' });
@@ -208,16 +208,11 @@ export class ScanWorkflow {
         }
       } catch (err) {
         this.emit('error',
-          `[Evaluate] batch failed for "${target.target_role}": ${err.message}`,
+          `[Evaluate] batch failed for "${target.target_role}": ${err.message} — skipping ${group.length} listings`,
           { agent: 'evaluate' });
         this.stats.errors += group.length;
         for (const job of group) {
-          job.scores = {
-            role_score: 0, industry_score: 0, location_score: 0,
-            preference_score: 0, overall_score: 0, preference_scores: {},
-            recommendation: 'Research more', recommendation_reason: 'Evaluation failed.',
-            next_action: 'Reach out', next_action_detail: '',
-          };
+          job._evalFailed = true;
         }
       }
     }
@@ -227,11 +222,19 @@ export class ScanWorkflow {
     const now = new Date().toISOString();
     let saveIdx = 0;
 
-    for (const job of pending) {
+    const saveable = pending.filter(j => !j._evalFailed);
+    const evalSkipped = pending.length - saveable.length;
+    if (evalSkipped > 0) {
+      this.emit('info',
+        `[Save] Skipping ${evalSkipped} listing(s) where evaluation failed`,
+        { agent: 'save' });
+    }
+
+    for (const job of saveable) {
       if (this.signal.aborted) break;
       saveIdx++;
       this.emit('progress',
-        `[Save] (${saveIdx}/${pending.length}) "${job.title}" @ ${job.company || '?'} score=${job.scores?.overall_score ?? 0}`,
+        `[Save] (${saveIdx}/${saveable.length}) "${job.title}" @ ${job.company || '?'} score=${job.scores?.overall_score ?? 0}`,
         { agent: 'save' });
       try {
         const s = job.scores || {};

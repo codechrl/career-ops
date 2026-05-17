@@ -9,6 +9,8 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 from typing import Optional
 
+from lxml import etree as lxml_etree
+
 import requests
 from bs4 import BeautifulSoup
 
@@ -132,8 +134,18 @@ def _fetch_rss(url: str, portal_name: str) -> list[dict]:
     if not res:
         return []
     try:
-        content = re.sub(r' xmlns(?::\w+)?="[^"]*"', "", res.text)
-        root = ET.fromstring(content)
+        # Strip namespace declarations and prefixes so ET doesn't choke on unbound prefixes
+        content = res.text
+        content = re.sub(r' xmlns(?::\w+)?="[^"]*"', "", content)
+        content = re.sub(r'<(/?)\w+:(\w[\w.-]*)', r'<\1\2', content)
+        raw = content.encode("utf-8", errors="replace")
+        try:
+            root = ET.fromstring(raw)
+        except ET.ParseError:
+            # Further malformed XML (unescaped &, invalid tokens, etc.) — use lxml with recovery
+            parser = lxml_etree.XMLParser(recover=True, ns_clean=True, encoding="utf-8")
+            lroot = lxml_etree.fromstring(raw, parser=parser)
+            root = ET.fromstring(lxml_etree.tostring(lroot))
         items = root.findall(".//item") or root.findall(".//entry")
         result = []
         for item in items[:50]:
