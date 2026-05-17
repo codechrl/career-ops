@@ -1,0 +1,6 @@
+crewai==1.14.4
+litellm
+fastapi
+uvicorn[standard]
+gunicorn
+requests

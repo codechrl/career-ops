@@ -14,6 +14,13 @@ services:
       retries: 10
     restart: unless-stopped
 
+  agent:
+    build:
+      context: ./packages/agent
+    environment:
+      OTEL_SDK_DISABLED: "true"
+    restart: unless-stopped
+
   server:
     build:
       context: .
@@ -22,6 +29,7 @@ services:
       - .env
     environment:
       DATABASE_URL: postgresql://career_ops:career_ops_pass@postgres:5432/career_ops
+      AGENT_SERVICE_URL: http://agent:8000
     volumes:
       - app_data:/app/data
       - ./reports:/app/reports
@@ -30,6 +38,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      agent:
+        condition: service_started
     restart: unless-stopped
 
   web:

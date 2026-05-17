@@ -4,9 +4,23 @@
  */
 import { dbAll, dbGet, dbRun } from '../loaders/database.mjs';
 import { getLLMForProcess } from '../llm/index.mjs';
-import { runPortalDiscoveryAgent } from './portal-discovery-agent.mjs';
+import { runPortalDiscoveryAgent } from './portal-discovery-client.mjs';
 
 const VERIFY_TIMEOUT_MS = 15_000;
+
+// ── Concurrency helper ────────────────────────────────────────────────────────
+async function pMap(items, fn, concurrency = 3) {
+  const results = [];
+  const queue = [...items.entries()];
+  const workers = Array.from({ length: Math.min(concurrency, items.length || 1) }, async () => {
+    while (queue.length) {
+      const [i, item] = queue.shift();
+      results[i] = await fn(item).catch(err => ({ __error: err.message }));
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
 
 /**
  * Test that a portal's primary search URL is reachable (HTTP 2xx/3xx).
@@ -84,14 +98,13 @@ export async function verifyPortal(portalId) {
  */
 export async function refreshAllPortals(onEvent, signal) {
   const portals = await dbAll("SELECT * FROM portals WHERE enabled = 1 ORDER BY id ASC");
-  const results = [];
+  const results = new Array(portals.length);
   const llm = await getLLMForProcess('portal-discovery');
 
-  for (const portal of portals) {
-    if (signal?.aborted) {
-      onEvent?.({ type: 'done', total: results.length, ok: results.filter(r => !r.error).length, failing: results.filter(r => r.error).length, cancelled: true });
-      return results;
-    }
+  onEvent?.({ type: 'log', message: `Starting discovery for ${portals.length} portals (3 parallel workers)…` });
+
+  await pMap(portals, async (portal) => {
+    if (signal?.aborted) return;
 
     // Skip if already discovered and URL still works
     const existingCfg = portal.search_config;
@@ -104,9 +117,8 @@ export async function refreshAllPortals(onEvent, signal) {
           'UPDATE portals SET catalog_status = ?, last_catalog_refresh = ?, updated_at = ? WHERE id = ?',
           ['ok', now, now, portal.id]
         );
-        results.push({ id: portal.id, provider: portal.provider, status: 'skipped', confidence: existingCfg.confidence });
         onEvent?.({ type: 'progress', id: portal.id, provider: portal.provider, status: 'skipped (still working)', skipped: true });
-        continue;
+        return { id: portal.id, provider: portal.provider, status: 'skipped', confidence: existingCfg.confidence };
       }
       onEvent?.({ type: 'log', id: portal.id, provider: portal.provider, message: `Existing config failed ping (${ping.status || ping.error}), re-discovering…` });
     }
@@ -120,27 +132,23 @@ export async function refreshAllPortals(onEvent, signal) {
         signal,
       );
       const now = new Date().toISOString();
-      const newConfig = {
-        ...cfg,
-        discovered_by: 'agent',
-        discovered_at: now,
-      };
+      const newConfig = { ...cfg, discovered_by: 'agent', discovered_at: now };
       await dbRun(
         'UPDATE portals SET search_config = ?, catalog_status = ?, last_catalog_refresh = ?, updated_at = ? WHERE id = ?',
         [JSON.stringify(newConfig), cfg.confidence === 'high' ? 'ok' : 'pending', now, now, portal.id]
       );
-      results.push({ id: portal.id, provider: portal.provider, status: cfg.method, confidence: cfg.confidence });
       onEvent?.({ type: 'progress', id: portal.id, provider: portal.provider, status: `${cfg.method} (${cfg.confidence})` });
+      return { id: portal.id, provider: portal.provider, status: cfg.method, confidence: cfg.confidence };
     } catch (err) {
-      results.push({ id: portal.id, provider: portal.provider, error: err.message });
       onEvent?.({ type: 'progress', id: portal.id, provider: portal.provider, status: 'error', message: err.message });
+      return { id: portal.id, provider: portal.provider, error: err.message };
     }
-  }
+  }, 3);
 
-  const done = results.filter(r => !r.error).length;
-  const failed = results.filter(r => r.error).length;
-  onEvent?.({ type: 'done', total: results.length, ok: done, failing: failed });
-  return results;
+  const done = results.filter(r => r && !r.error).length;
+  const failed = results.filter(r => r?.error).length;
+  onEvent?.({ type: 'done', total: portals.length, ok: done, failing: failed });
+  return results.filter(Boolean);
 }
 
 /**
