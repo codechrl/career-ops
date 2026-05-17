@@ -3,12 +3,12 @@ import { listSessions, deleteSession } from '../../models/session.mjs';
 
 const router = express.Router();
 
-router.get('/', (req, res) => {
-  res.json(listSessions());
+router.get('/', async (req, res) => {
+  res.json(await listSessions());
 });
 
-router.delete('/:portal', (req, res) => {
-  const result = deleteSession(req.params.portal);
+router.delete('/:portal', async (req, res) => {
+  await deleteSession(req.params.portal);
   res.json({ deleted: true, portal: req.params.portal });
 });
 

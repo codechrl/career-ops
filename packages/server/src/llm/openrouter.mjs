@@ -8,7 +8,7 @@ const BASE = 'https://openrouter.ai/api/v1/chat/completions';
 
 /** @type {(messages: LlmMessage[], opts: LlmOptions, apiKey: string) => Promise<string>} */
 async function chatCompletion(messages, opts, apiKey) {
-  const model = opts.model || DEFAULT_MODEL;
+  const model = opts.model || process.env.LLM_MODEL || DEFAULT_MODEL;
 
   const body = {
     model,

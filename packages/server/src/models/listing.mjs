@@ -1,21 +1,21 @@
-import { getDb } from '../loaders/database.mjs';
+import { dbAll, dbGet, dbRun } from '../loaders/database.mjs';
 
-export function listListings() {
-  return getDb().query('SELECT * FROM listings ORDER BY created_at DESC').all();
+export async function listListings() {
+  return dbAll('SELECT * FROM listings ORDER BY created_at DESC');
 }
 
-export function addListing({ company, role, score, status, pdf, report, apply_method }) {
+export async function addListing({ company, role, score, status, pdf, report, apply_method }) {
   const now = new Date().toISOString();
-  return getDb().run('INSERT INTO listings (company, role, score, status, pdf, report, apply_method, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', company, role, score, status, pdf, report, apply_method, now, now());
+  return dbRun('INSERT INTO listings (company, role, score, status, pdf, report, apply_method, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [company, role, score, status, pdf, report, apply_method, now, now]);
 }
 
-export function updateListing(id, fields) {
+export async function updateListing(id, fields) {
   const keys = Object.keys(fields);
   const sql = `UPDATE listings SET ${keys.map(k => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`;
   const values = [...keys.map(k => fields[k]), new Date().toISOString(), id];
-  return getDb().run(sql, ...values);
+  return dbRun(sql, values);
 }
 
-export function getListing(id) {
-  return getDb().query('SELECT * FROM listings WHERE id = ?').get(id);
+export async function getListing(id) {
+  return dbGet('SELECT * FROM listings WHERE id = ?', [id]);
 }
