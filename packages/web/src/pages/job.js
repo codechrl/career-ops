@@ -231,8 +231,11 @@ export function renderJob(root) {
     <!-- Listings -->
     <div class="tab-panel" id="tab-listings">
       <div class="section-header">
-        <h2>My Listings</h2>
-        <button class="btn btn-primary btn-sm" id="add-listing-btn">+ Add Listing</button>
+        <h2>My Listings <span id="listings-count" style="font-size:13px;font-weight:400;color:var(--muted)"></span></h2>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-danger btn-sm" id="delete-all-listings-btn" style="display:none">Delete All</button>
+          <button class="btn btn-primary btn-sm" id="add-listing-btn">+ Add Listing</button>
+        </div>
       </div>
       <div id="add-listing-form" style="display:none;margin-bottom:16px" class="card">
         <div class="card-title">Add Listing Manually</div>
@@ -260,6 +263,7 @@ export function renderJob(root) {
           </tbody>
         </table>
       </div>
+      <div id="listings-pager"></div>
     </div>
   `;
 
@@ -897,6 +901,9 @@ function openCatalogPanel(root, portal) {
 }
 
 // ── Listings Tab ──────────────────────────────────────────────────────────────
+let _listingsAll = [];
+let _listingsPage = 1;
+
 function setupListingsTab(root) {
   loadListings(root);
 
@@ -920,37 +927,73 @@ function setupListingsTab(root) {
       loadListings(root);
     } catch (err) { alert('Failed: ' + err.message); }
   };
+
+  root.querySelector('#delete-all-listings-btn').onclick = async () => {
+    if (!confirm(`Delete ALL ${_listingsAll.length} listings? This cannot be undone.`)) return;
+    try {
+      await api('DELETE', '/api/listings/all');
+      _listingsAll = [];
+      _listingsPage = 1;
+      renderListingsPage(root);
+    } catch (err) { alert('Delete failed: ' + err.message); }
+  };
 }
 
 async function loadListings(root) {
   const tbody = root.querySelector('#listings-tbody');
+  tbody.innerHTML = `<tr><td colspan="6" style="padding:20px 12px"><div class="loading-row"><span class="spinner"></span> Loading…</div></td></tr>`;
   try {
-    const listings = await api('GET', '/api/listings');
-    if (!listings.length) {
-      tbody.innerHTML = `<tr><td colspan="6" style="padding:20px;color:var(--muted);text-align:center">No listings yet.</td></tr>`;
-      return;
-    }
-    tbody.innerHTML = listings.map(l => `
-      <tr>
-        <td class="text-muted text-mono">${escHtml(l.id)}</td>
-        <td class="text-muted">${escHtml(l.date)}</td>
-        <td><strong>${escHtml(l.company)}</strong></td>
-        <td>${escHtml(l.role)}</td>
-        <td>${stageBadge(l.status)}</td>
-        <td>
-          <button class="btn btn-danger btn-sm del-listing" data-id="${escHtml(l.id)}">Delete</button>
-        </td>
-      </tr>
-    `).join('');
-    tbody.querySelectorAll('.del-listing').forEach(btn => {
-      btn.onclick = async () => {
-        if (!confirm('Delete this listing?')) return;
-        await api('DELETE', `/api/listings/${btn.dataset.id}`);
-        loadListings(root);
-      };
-    });
+    _listingsAll = await api('GET', '/api/listings');
+    _listingsPage = 1;
+    renderListingsPage(root);
   } catch (err) {
     tbody.innerHTML = `<tr><td colspan="6" class="alert alert-error">Failed: ${escHtml(err.message)}</td></tr>`;
+  }
+}
+
+function renderListingsPage(root) {
+  const tbody   = root.querySelector('#listings-tbody');
+  const pagerEl = root.querySelector('#listings-pager');
+  const countEl = root.querySelector('#listings-count');
+  const delBtn  = root.querySelector('#delete-all-listings-btn');
+
+  const { slice, page, pages, total } = paged(_listingsAll, _listingsPage);
+  _listingsPage = page;
+
+  if (countEl) countEl.textContent = total ? `(${total})` : '';
+  if (delBtn)  delBtn.style.display = total > 0 ? '' : 'none';
+
+  if (!total) {
+    tbody.innerHTML = `<tr><td colspan="6" style="padding:20px;color:var(--muted);text-align:center">No listings yet.</td></tr>`;
+    if (pagerEl) pagerEl.innerHTML = '';
+    return;
+  }
+
+  tbody.innerHTML = slice.map(l => `
+    <tr>
+      <td class="text-muted text-mono">${escHtml(l.id)}</td>
+      <td class="text-muted">${escHtml(l.date)}</td>
+      <td><strong>${escHtml(l.company)}</strong></td>
+      <td>${escHtml(l.role)}</td>
+      <td>${stageBadge(l.status)}</td>
+      <td>
+        <button class="btn btn-danger btn-sm del-listing" data-id="${escHtml(l.id)}">Delete</button>
+      </td>
+    </tr>
+  `).join('');
+
+  tbody.querySelectorAll('.del-listing').forEach(btn => {
+    btn.onclick = async () => {
+      if (!confirm('Delete this listing?')) return;
+      await api('DELETE', `/api/listings/${btn.dataset.id}`);
+      _listingsAll = _listingsAll.filter(l => String(l.id) !== btn.dataset.id);
+      renderListingsPage(root);
+    };
+  });
+
+  if (pagerEl) {
+    pagerEl.innerHTML = pagerHtml(page, pages, total);
+    bindPager(pagerEl, () => { _listingsPage--; renderListingsPage(root); }, () => { _listingsPage++; renderListingsPage(root); });
   }
 }
 
