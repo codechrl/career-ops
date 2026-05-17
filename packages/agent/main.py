@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from discovery_agent import run_discovery_agent
 from scan_agent import run_batch_evaluate
+from fetch_jobs_agent import run_fetch_jobs
 
 app = FastAPI(title="career-ops agent service")
 
@@ -48,6 +49,17 @@ class EvaluateBatchRequest(BaseModel):
     concurrency: int = 3
 
 
+# ── Fetch jobs models ─────────────────────────────────────────────────────────
+
+class FetchJobsRequest(BaseModel):
+    portal_provider: str
+    portal_name: str
+    careers_url: str
+    search_config: dict
+    target_role: str
+    limit: int = 50
+
+
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -81,6 +93,19 @@ def evaluate(req: EvaluateBatchRequest):
         concurrency=req.concurrency,
     )
     return {"results": results}
+
+
+@app.post("/fetch-jobs")
+def fetch_jobs(req: FetchJobsRequest):
+    jobs = run_fetch_jobs(
+        portal_provider=req.portal_provider,
+        portal_name=req.portal_name,
+        careers_url=req.careers_url,
+        search_config=req.search_config,
+        target_role=req.target_role,
+        limit=req.limit,
+    )
+    return {"jobs": jobs}
 
 
 if __name__ == "__main__":
