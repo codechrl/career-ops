@@ -3,7 +3,7 @@
  * Uses Vercel AI SDK generateText with native tool calling.
  * Tools: fetch_url, test_search, extract_links, finish
  */
-import { generateText, tool } from 'ai';
+import { generateText, tool, stepCountIs } from 'ai';
 import { z } from 'zod';
 import { getAISdkModel } from '../llm/ai-sdk-model.mjs';
 import { getLLMKey } from '../models/llm-key.mjs';
@@ -169,24 +169,24 @@ export async function runPortalDiscoveryAgent(portal, _llm, onLog, signal) {
 
   const tools = {
     fetch_url: tool({
-      description: 'Fetch a URL and return status, content-type, and body preview.',
-      parameters: z.object({
+      description: 'Fetch a URL and return status, content-type, and body preview. Use method GET (default) or HEAD.',
+      inputSchema: z.object({
         url: z.string(),
-        method: z.enum(['GET', 'HEAD']).optional().default('GET'),
+        method: z.enum(['GET', 'HEAD']),
       }),
-      execute: async ({ url, method }) => {
+      execute: async ({ url, method = 'GET' }) => {
         if (signal?.aborted) return { error: 'Cancelled' };
         log(`  → fetch_url(${url})`);
         return fetchUrl({ url, method });
       },
     }),
     test_search: tool({
-      description: 'Fill a URL template with a sample query and check if the response looks like job listings.',
-      parameters: z.object({
+      description: 'Fill a URL template with a sample query and check if the response looks like job listings. Use {query} placeholder in the template.',
+      inputSchema: z.object({
         url_template: z.string(),
-        query: z.string().optional().default('software engineer'),
+        query: z.string(),
       }),
-      execute: async ({ url_template, query }) => {
+      execute: async ({ url_template, query = 'software engineer' }) => {
         if (signal?.aborted) return { error: 'Cancelled' };
         log(`  → test_search(${url_template})`);
         return testSearch({ url_template, query });
@@ -194,7 +194,7 @@ export async function runPortalDiscoveryAgent(portal, _llm, onLog, signal) {
     }),
     extract_links: tool({
       description: 'Extract all job/api/rss/search-related links from a page.',
-      parameters: z.object({ url: z.string() }),
+      inputSchema: z.object({ url: z.string() }),
       execute: async ({ url }) => {
         if (signal?.aborted) return { error: 'Cancelled' };
         log(`  → extract_links(${url})`);
@@ -203,7 +203,7 @@ export async function runPortalDiscoveryAgent(portal, _llm, onLog, signal) {
     }),
     google_search: tool({
       description: 'Search Google via SerpAPI. Use this to find API docs, RSS feeds, or developer guides for the portal when direct exploration is unclear.',
-      parameters: z.object({ query: z.string() }),
+      inputSchema: z.object({ query: z.string() }),
       execute: async ({ query }) => {
         if (signal?.aborted) return { error: 'Cancelled' };
         log(`  → google_search(${query})`);
@@ -212,7 +212,7 @@ export async function runPortalDiscoveryAgent(portal, _llm, onLog, signal) {
     }),
     finish: tool({
       description: 'Submit your final discovery result.',
-      parameters: z.object({
+      inputSchema: z.object({
         method: z.enum(['rss_feed', 'json_api', 'html_scrape', 'playwright', 'ats', 'unsupported', 'unknown']),
         url_template: z.string().nullable(),
         notes: z.string(),
@@ -230,13 +230,13 @@ export async function runPortalDiscoveryAgent(portal, _llm, onLog, signal) {
     await generateText({
       model,
       tools,
-      maxSteps: MAX_STEPS,
+      stopWhen: stepCountIs(MAX_STEPS),
       maxRetries: 3,
       temperature: 0.2,
-      maxTokens: 1500,
+      maxOutputTokens: 1500,
       abortSignal: signal,
+      system: SYSTEM_PROMPT,
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user', content: `Discover how to programmatically search for jobs on this portal:\n\nName: ${portal.name}\nProvider: ${portal.provider}\nURL: ${baseUrl}\n\nStart by fetching the main page or the /jobs path.` },
       ],
       onStepFinish({ text }) {

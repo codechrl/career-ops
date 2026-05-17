@@ -1,20 +1,6 @@
 import { load as cheerioLoad } from 'cheerio';
 import { dbGet, dbRun, dbInsert } from '../loaders/database.mjs';
-import { getLLM, getLLMByName } from '../llm/index.mjs';
-import { structuredChat } from './structured-llm.mjs';
-
-// ─── LLM config helper ────────────────────────────────────────────────────────
-async function getProcessLLMAndModel(processKey) {
-  const row = await dbGet('SELECT value FROM settings WHERE key = ?', [`llm_config_${processKey}`]);
-  if (!row) return { llm: getLLM(), model: undefined };
-  try {
-    const cfg = JSON.parse(row.value);
-    const llm = cfg.provider ? (getLLMByName(cfg.provider) || getLLM()) : getLLM();
-    return { llm, model: cfg.model || undefined };
-  } catch {
-    return { llm: getLLM(), model: undefined };
-  }
-}
+import { evaluateBatch } from './scan-evaluate-client.mjs';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function isRelevant(title, targetRole) {
@@ -392,8 +378,7 @@ export class ScanWorkflow {
       return;
     }
 
-    const { llm, model } = await getProcessLLMAndModel('scan');
-    const llmOpts = model ? { model } : {};
+    // LLM config is read by scan-evaluate-client.mjs directly from DB
 
     // ── STAGE 1: Fetch all portals × targets in parallel ─────────────────────
     this.emit('progress',
@@ -467,116 +452,45 @@ export class ScanWorkflow {
     }, 10); // 10 parallel scrapes
 
     // ── STAGE 3: Evaluate with LLM in parallel (batched) ─────────────────────
-    this.emit('progress', `[Evaluate] Scoring ${pending.length} listings with LLM…`, { agent: 'evaluate' });
+    this.emit('progress', `[Evaluate] Scoring ${pending.length} listings via Python agent…`, { agent: 'evaluate' });
 
-    const SCORE_SCHEMA = {
-      role_score: 0,
-      industry_score: 0,
-      location_score: 0,
-      preference_score: 0,
-      recommendation: '',
-      recommendation_reason: '',
-      next_action: '',
-      next_action_detail: '',
-    };
+    // Group pending jobs by target_id so each target gets one batch call
+    const byTarget = new Map();
+    for (const job of pending) {
+      const tid = job.target.id;
+      if (!byTarget.has(tid)) byTarget.set(tid, []);
+      byTarget.get(tid).push(job);
+    }
 
-    const evalCount = { n: 0 };
-    await pMap(pending, async job => {
-      if (this.signal.aborted) return;
-      const t = job.target;
-      const snippet = (job.jd_text || `Title: ${job.title}\nCompany: ${job.company}`).slice(0, 2000);
-      const idx = ++evalCount.n;
+    for (const [, group] of byTarget) {
+      if (this.signal.aborted) break;
+      const target = group[0].target;
       this.emit('progress',
-        `[Evaluate] (${idx}/${pending.length}) scoring "${job.title}" @ ${job.company || '?'} for target: ${t.target_role}`,
+        `[Evaluate] Sending ${group.length} jobs for target "${target.target_role}" to Python agent…`,
         { agent: 'evaluate' });
       try {
-        const locationReq = t.target_location || '';
-        const industriesReq = t.industries || '';
-        const prefsReq = t.metrics || '';
-        const hasIndustry = !!industriesReq;
-        const hasLocation = !!locationReq;
-        // Parse individual preferences
-        const prefItems = prefsReq
-          ? prefsReq.split(/[,;\n]+/).map(p => p.trim()).filter(Boolean)
-          : [];
-        const prefScoreSchema = {};
-        prefItems.forEach(p => { prefScoreSchema[p] = 0; });
-        const dynamicSchema = { ...SCORE_SCHEMA, preference_scores: prefItems.length ? prefScoreSchema : {} };
-        job.scores = await structuredChat(llm, dynamicSchema, [
-          {
-            role: 'system',
-            content: `You are a strict job-match scorer AND application advisor. Score 0-100 integers only. Be honest and critical.
-
-Candidate criteria:
-  Target Role: ${t.target_role}
-  Required Industries: ${industriesReq || '(none)'}
-  Required Location: ${locationReq || '(none)'}
-  Preferences: ${prefsReq || '(none)'}
-
-SCORING RULES:
-
-role_score — ALWAYS score. How well does the job title/duties match the target role?
-  90-100: near-identical | 60-89: significant overlap | 30-59: tangential | 0-29: unrelated
-
-industry_score — ${hasIndustry ? `Score 0-100. Required: "${industriesReq}"
-  90-100: exact match | 60-89: adjacent industry | 0-29: unrelated` : 'Set to 0. No industry requirement specified.'}
-
-location_score — ${hasLocation ? `Score 0-100. Required: "${locationReq}"
-  Rules (be strict about geography):
-  - Regions are SPECIFIC: Asia \u2260 Latin America \u2260 Europe \u2260 USA
-  - "Remote in Brazil" does NOT match "Remote in Asia" \u2192 0-15
-  - "Remote in Philippines/Vietnam/India" matches "Remote in Asia" \u2192 85-100
-  - "Worldwide remote / no restrictions" \u2192 60-75
-  - Wrong country on-site \u2192 0-10` : 'Set to 0. No location requirement specified.'}
-
-preference_score — ${prefItems.length ? 'Aggregate 0-100 for ALL preferences. Strict: 80+ only if clearly met.' : 'Set to 0. No preferences specified.'}
-
-preference_scores — Score each preference individually (0-100):
-${prefItems.length ? prefItems.map(p => `  - "${p}"`).join('\n') : '  (none — return {})'}
-  90-100 = clearly met | 60-89 = partially | 0-29 = not met. Return {} if no preferences.
-
-NOTE: Do NOT include overall_score in your response — it is computed server-side.
-
-RECOMMENDATION (your verdict on whether to pursue this job):
-recommendation — Choose ONE: "Strong Apply" | "Apply" | "Research more" | "Skip"
-  Strong Apply: excellent match (role+location both strong)
-  Apply: decent match, worth trying
-  Research more: interesting but unclear fit or missing info
-  Skip: poor role match OR location hard mismatch
-recommendation_reason — One sentence explaining the verdict.
-
-NEXT ACTION (HOW to apply — based on what the job posting actually says):
-next_action — Choose ONE based on the application method described in the posting:
-  "Apply online"     — posting has a direct apply button, job board form, or apply URL
-  "Email"            — posting lists an email to send applications/inquiries
-  "LinkedIn DM"      — posting came from LinkedIn or mentions a recruiter to contact
-  "Company website"  — apply via the company\u2019s own careers/jobs page
-  "Reach out"        — unclear method; general outreach needed
-next_action_detail — The specific URL, email address, or instruction extracted from the posting. Empty string if not found.`,
-          },
-          { role: 'user', content: `Job posting:\nTitle: ${job.title}\nCompany: ${job.company}\n\n${snippet}` },
-        ], llmOpts);
-        // Compute overall server-side using only active dimensions
-        const dims = [{ v: job.scores.role_score || 0, w: 35 }];
-        if (hasIndustry) dims.push({ v: job.scores.industry_score || 0, w: 25 });
-        if (hasLocation) dims.push({ v: job.scores.location_score || 0, w: 20 });
-        if (prefItems.length) dims.push({ v: job.scores.preference_score || 0, w: 20 });
-        const wTotal = dims.reduce((s, d) => s + d.w, 0);
-        job.scores.overall_score = Math.round(dims.reduce((s, d) => s + d.v * d.w / wTotal, 0));
-        // Zero out inactive scores so they don't mislead
-        if (!hasIndustry) job.scores.industry_score = 0;
-        if (!hasLocation) job.scores.location_score = 0;
-        this.emit('progress',
-          `[Evaluate] (${idx}/${pending.length}) → overall=${job.scores.overall_score} role=${job.scores.role_score} [${job.scores.recommendation}] → ${job.scores.next_action}`,
-          { agent: 'evaluate' });
+        const evalResults = await evaluateBatch(group, target, 3);
+        // Map results back by URL
+        const byUrl = new Map(evalResults.map(r => [r.url, r.scores]));
+        for (const job of group) {
+          const scores = byUrl.get(job.url);
+          if (scores) {
+            job.scores = scores;
+            this.emit('progress',
+              `[Evaluate] "${job.title}" → overall=${scores.overall_score} role=${scores.role_score} [${scores.recommendation}]`,
+              { agent: 'evaluate' });
+          } else {
+            job.scores = { role_score: 0, industry_score: 0, location_score: 0, preference_score: 0, overall_score: 0, preference_scores: {}, recommendation: 'Research more', recommendation_reason: 'No result returned.', next_action: 'Reach out', next_action_detail: '' };
+          }
+        }
       } catch (err) {
-        job.scores = { role_score: 0, industry_score: 0, location_score: 0, preference_score: 0, overall_score: 0, preference_scores: {}, recommendation: 'Research more', recommendation_reason: 'Evaluation failed.', next_action: 'Reach out', next_action_detail: '' };
-        this.stats.errors++;
-        this.emit('error',
-          `[Evaluate] (${idx}/${pending.length}) failed "${job.title}" — ${err.message}`,
-          { agent: 'evaluate' });
+        this.emit('error', `[Evaluate] batch failed for target "${target.target_role}": ${err.message}`, { agent: 'evaluate' });
+        this.stats.errors += group.length;
+        for (const job of group) {
+          job.scores = { role_score: 0, industry_score: 0, location_score: 0, preference_score: 0, overall_score: 0, preference_scores: {}, recommendation: 'Research more', recommendation_reason: 'Evaluation failed.', next_action: 'Reach out', next_action_detail: '' };
+        }
       }
-    }, 4); // 4 parallel LLM calls to avoid rate limits
+    }
 
     // ── STAGE 4: Save ─────────────────────────────────────────────────────────
     this.emit('progress', `[Save] Storing ${pending.length} results…`, { agent: 'save' });
