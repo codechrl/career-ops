@@ -7,6 +7,10 @@
     "dev": "bun --watch src/index.mjs"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.78",
+    "@ai-sdk/google": "^3.0.75",
+    "@ai-sdk/openai": "^3.0.64",
+    "ai": "^6.0.184",
     "cheerio": "1.0.0",
     "cors": "^2.8.5",
     "dotenv": "^17.0.0",
@@ -17,6 +21,7 @@
     "node-cron": "^3.0.3",
     "pdf-parse": "^1.1.1",
     "pg": "^8.13.0",
-    "playwright": "^1.58.1"
+    "playwright": "^1.58.1",
+    "zod": "^4.4.3"
   }
 }

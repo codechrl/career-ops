@@ -1,4 +1,4 @@
-import { initDatabase, dbGet } from './database.mjs';
+import { initDatabase, dbGet, dbRun } from './database.mjs';
 import { initAuth } from './auth.mjs';
 import { initExpress } from './express.mjs';
 import { listLLMKeys } from '../models/llm-key.mjs';
@@ -6,6 +6,16 @@ import { initScheduler, initCatalogScheduler } from '../services/scan-scheduler.
 
 export async function initLoaders() {
   await initDatabase();
+  // Mark any runs that were still 'running' when the server last died
+  const orphanTs = new Date().toISOString();
+  await dbRun(
+    `UPDATE scan_runs SET status='cancelled', finished_at=$1 WHERE status='running'`,
+    [orphanTs]
+  ).catch(() => {});
+  await dbRun(
+    `UPDATE catalog_refresh_runs SET status='cancelled', finished_at=$1 WHERE status='running'`,
+    [orphanTs]
+  ).catch(() => {});
   // Load saved LLM keys into process.env so providers work after restart
   const keys = await listLLMKeys();
   for (const k of keys) {

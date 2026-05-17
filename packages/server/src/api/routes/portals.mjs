@@ -7,6 +7,9 @@ import { updateCatalogScheduler } from '../../services/scan-scheduler.mjs';
 
 const router = express.Router();
 
+// Track running catalog refreshes so they can be cancelled
+const activeRefreshes = new Map(); // runId → AbortController
+
 router.get('/', requireAuth, async (req, res) => {
   res.json(await listPortals());
 });
@@ -97,33 +100,48 @@ router.post('/catalog/refresh', requireAuth, async (req, res) => {
 
   res.json({ ok: true, runId, message: 'Catalog refresh started — check server logs or pipeline page.' });
 
+  const ac = new AbortController();
+  activeRefreshes.set(runId, ac);
+
   (async () => {
     const lines = [];
+    let okSoFar = 0, failSoFar = 0;
     console.log(`[catalog-refresh #${runId}] Starting…`);
     try {
       await refreshAllPortals((ev) => {
-        if (ev.type === 'progress') {
-          const icon = ev.status === 'ok' ? '✓' : '✗';
-          const msg = `${icon} [${ev.provider || ev.id}] ${ev.status}`;
+        if (ac.signal.aborted) return;
+        if (ev.type === 'log') {
+          console.log(`[catalog-refresh #${runId}]   ${ev.message}`);
+        } else if (ev.type === 'progress') {
+          const msg = `[${ev.provider}] ${ev.status}${ev.message ? ' — ' + ev.message : ''}`;
           lines.push(msg);
           console.log(`[catalog-refresh #${runId}] ${msg}`);
+          // Count and flush to DB after each portal finishes (not 'discovering' in-progress)
+          if (ev.status !== 'discovering') {
+            if (ev.status?.startsWith('error') || ev.status === 'error') failSoFar++;
+            else okSoFar++;
+            dbRun(
+              `UPDATE catalog_refresh_runs SET ok_count=$1, failing_count=$2, total_count=$3, log=$4 WHERE id=$5`,
+              [okSoFar, failSoFar, okSoFar + failSoFar, lines.join('\n'), runId]
+            ).catch(() => {});
+          }
         } else if (ev.type === 'done') {
-          const msg = `Done — ${ev.ok} ok, ${ev.failing} failing`;
+          const msg = `Done — ${ev.ok} ok, ${ev.failing} failing${ev.cancelled ? ' (cancelled)' : ''}`;
           lines.push(msg);
           console.log(`[catalog-refresh #${runId}] ${msg}`);
         } else if (ev.type === 'error') {
           lines.push(`Error: ${ev.message}`);
           console.error(`[catalog-refresh #${runId}] Error: ${ev.message}`);
         }
-      });
-      const lastDone = lines.find(l => l.startsWith('Done'));
-      const ok = lastDone ? parseInt(lastDone.match(/(\d+) ok/)?.[1] || 0) : 0;
-      const failing = lastDone ? parseInt(lastDone.match(/(\d+) failing/)?.[1] || 0) : 0;
+      }, ac.signal);
+      const cancelled = ac.signal.aborted;
+      activeRefreshes.delete(runId);
       await dbRun(
-        `UPDATE catalog_refresh_runs SET status='done', ok_count=$1, failing_count=$2, total_count=$3, log=$4, finished_at=$5 WHERE id=$6`,
-        [ok, failing, ok + failing, lines.join('\n'), new Date().toISOString(), runId]
+        `UPDATE catalog_refresh_runs SET status=$1, ok_count=$2, failing_count=$3, total_count=$4, log=$5, finished_at=$6 WHERE id=$7`,
+        [cancelled ? 'cancelled' : 'done', okSoFar, failSoFar, okSoFar + failSoFar, lines.join('\n'), new Date().toISOString(), runId]
       );
     } catch (err) {
+      activeRefreshes.delete(runId);
       console.error(`[catalog-refresh #${runId}] Fatal:`, err.message);
       await dbRun(
         `UPDATE catalog_refresh_runs SET status='failed', log=$1, finished_at=$2 WHERE id=$3`,
@@ -131,6 +149,20 @@ router.post('/catalog/refresh', requireAuth, async (req, res) => {
       ).catch(() => {});
     }
   })();
+});
+
+// POST /api/portals/catalog/runs/:id/cancel — abort a running catalog refresh
+router.post('/catalog/runs/:id/cancel', requireAuth, async (req, res) => {
+  const runId = parseInt(req.params.id);
+  const ac = activeRefreshes.get(runId);
+  if (ac) ac.abort();
+  // Always mark as cancelled in DB regardless of in-memory state
+  await dbRun(
+    `UPDATE catalog_refresh_runs SET status='cancelled', finished_at=$1 WHERE id=$2 AND status='running'`,
+    [new Date().toISOString(), runId]
+  ).catch(() => {});
+  console.log(`[catalog-refresh #${runId}] Cancelled by user`);
+  res.json({ ok: true });
 });
 
 // GET /api/portals/catalog/runs — list recent catalog refresh runs
