@@ -6,17 +6,9 @@ RUN bun install --production
 FROM oven/bun:1-slim
 WORKDIR /app
 COPY --from=builder /app/node_modules ./node_modules
-# Install system Chromium for Playwright browser scraping
-RUN apt-get update && apt-get install -y chromium --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
-ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 COPY packages/server/src/ ./packages/server/src/
 COPY packages/server/package.json ./packages/server/
-COPY modes/ ./modes/
-COPY providers/ ./providers/
 COPY config/ ./config/
-COPY templates/portals.example.yml ./portals.yml
 VOLUME ["/app/data", "/app/reports", "/app/config", "/app/output"]
 EXPOSE 3000
 ENV NODE_ENV=production
