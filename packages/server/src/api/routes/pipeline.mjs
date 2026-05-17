@@ -1,52 +1,61 @@
 import express from 'express';
-import fs from 'fs';
-import path from 'path';
+import { dbRun, dbInsert } from '../../loaders/database.mjs';
+import { requireAuth } from '../middleware/auth.mjs';
 
 const router = express.Router();
-const PIPELINE_PATH = path.resolve('data/pipeline.md');
 
-function ensurePipelineFile() {
-  if (!fs.existsSync(PIPELINE_PATH)) {
-    fs.mkdirSync(path.dirname(PIPELINE_PATH), { recursive: true });
-    fs.writeFileSync(PIPELINE_PATH, '## Pending\n\n## Processed\n', 'utf-8');
+router.get('/', requireAuth, async (req, res) => {
+  try {
+    const { rows: pending }   = await dbRun("SELECT * FROM pipeline_items WHERE status = 'pending'   ORDER BY created_at DESC");
+    const { rows: processed } = await dbRun("SELECT * FROM pipeline_items WHERE status = 'processed' ORDER BY created_at DESC");
+    res.json({ pending, processed });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
-}
-
-function parsePipeline() {
-  ensurePipelineFile();
-  const text = fs.readFileSync(PIPELINE_PATH, 'utf-8');
-  const pending = [];
-  const processed = [];
-  let section = null;
-  for (const line of text.split('\n')) {
-    if (line.match(/^##\s*Pending/i)) section = 'pending';
-    else if (line.match(/^##\s*Processed/i)) section = 'processed';
-    else if (line.startsWith('- [ ]') && section === 'pending') pending.push(line);
-    else if (line.startsWith('- [x]') && section === 'processed') processed.push(line);
-  }
-  return { pending, processed };
-}
-
-function appendToPipeline(item) {
-  ensurePipelineFile();
-  const text = fs.readFileSync(PIPELINE_PATH, 'utf-8');
-  const marker = '## Pending';
-  const idx = text.indexOf(marker);
-  const insertAt = idx === -1 ? text.length : text.indexOf('\n', idx + marker.length) + 1;
-  const line = `- [ ] ${item.url} | ${item.company || ''} | ${item.title || ''}`;
-  const nextText = text.slice(0, insertAt) + line + '\n' + text.slice(insertAt);
-  fs.writeFileSync(PIPELINE_PATH, nextText, 'utf-8');
-}
-
-router.get('/', (req, res) => {
-  res.json(parsePipeline());
 });
 
-router.post('/', (req, res) => {
-  const { url, company, title } = req.body;
+router.post('/', requireAuth, async (req, res) => {
+  const { url, company = '', title = '' } = req.body;
   if (!url) return res.status(400).json({ error: 'url is required' });
-  appendToPipeline({ url, company, title });
-  res.json({ added: true, url });
+  try {
+    const now = new Date().toISOString();
+    const id = await dbInsert(
+      'INSERT INTO pipeline_items (url, company, title, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [url, company, title, 'pending', now, now],
+    );
+    res.json({ added: true, id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.put('/:id', requireAuth, async (req, res) => {
+  const { status, company, title } = req.body;
+  const allowed = { status, company, title };
+  const updates = Object.entries(allowed).filter(([, v]) => v !== undefined);
+  if (!updates.length) return res.status(400).json({ error: 'Nothing to update' });
+  try {
+    const now = new Date().toISOString();
+    const sets = updates.map(([k], i) => `${k} = $${i + 1}`).join(', ');
+    await dbRun(
+      `UPDATE pipeline_items SET ${sets}, updated_at = $${updates.length + 1} WHERE id = $${updates.length + 2}`,
+      [...updates.map(([, v]) => v), now, req.params.id],
+    );
+    res.json({ updated: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/:id', requireAuth, async (req, res) => {
+  try {
+    await dbRun('DELETE FROM pipeline_items WHERE id = ?', [req.params.id]);
+    res.json({ deleted: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 export default router;
+
+

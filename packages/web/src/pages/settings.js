@@ -11,8 +11,9 @@ const PROVIDER_LABELS = Object.fromEntries(PROVIDERS.map(p => [p.id, p.label]));
 const PROVIDER_URLS   = Object.fromEntries(PROVIDERS.map(p => [p.id, p.url]));
 
 const PROCESS_DEFS = [
-  { key: 'cv',   label: 'CV Processing',  desc: 'CV upload, analysis, and job ranking' },
-  { key: 'scan', label: 'Scan Agents',    desc: 'Portal scanning, job evaluation, and search' },
+  { key: 'cv',               label: 'CV Processing',        desc: 'CV upload, analysis, and job ranking' },
+  { key: 'scan',             label: 'Scan Agents',          desc: 'Portal scanning, job evaluation, and search' },
+  { key: 'portal-discovery', label: 'Portal Discovery',     desc: 'LLM-based auto-detection of portal search methods (catalog refresh)' },
 ];
 
 function providerSelect(idSuffix, selectedId = 'deepseek') {
@@ -134,7 +135,7 @@ function populateDatalist(datalistEl, models) {
 }
 
 async function initProviderModelTab(root) {
-  let configs = { cv: { provider: 'deepseek', model: '' }, scan: { provider: 'deepseek', model: '' } };
+  let configs = { cv: { provider: 'deepseek', model: '' }, scan: { provider: 'deepseek', model: '' }, 'portal-discovery': { provider: 'deepseek', model: '' } };
   try {
     configs = await api('GET', '/api/llm-config');
   } catch {}

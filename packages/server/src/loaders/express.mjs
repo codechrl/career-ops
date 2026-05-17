@@ -16,6 +16,7 @@ import authRouter from '../api/routes/auth.mjs';
 import llmKeysRouter from '../api/routes/llm-keys.mjs';
 import jobTargetRouter from '../api/routes/job-target.mjs';
 import llmConfigRouter from '../api/routes/llm-config.mjs';
+import scanScheduleRouter from '../api/routes/scan-schedule.mjs';
 
 let app;
 
@@ -40,6 +41,7 @@ export async function initExpress() {
   app.use('/api/llm-keys', llmKeysRouter);
   app.use('/api/job-target', jobTargetRouter);
   app.use('/api/llm-config', llmConfigRouter);
+  app.use('/api/scan-schedule', scanScheduleRouter);
 
   app.get('/', (req, res) => res.send('career-ops server running'));
 

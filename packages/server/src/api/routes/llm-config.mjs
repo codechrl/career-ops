@@ -4,7 +4,7 @@ import { requireAuth } from '../middleware/auth.mjs';
 import { setLLM } from '../../llm/index.mjs';
 
 const router = express.Router();
-const VALID_PROCESSES = ['cv', 'scan'];
+const VALID_PROCESSES = ['cv', 'scan', 'portal-discovery'];
 const VALID_PROVIDERS = ['deepseek', 'openrouter', 'openai', 'anthropic', 'gemini'];
 
 async function readConfig(processKey) {
@@ -25,8 +25,10 @@ async function writeConfig(processKey, provider, model) {
 }
 
 router.get('/', requireAuth, async (req, res) => {
-  const [cv, scan] = await Promise.all([readConfig('cv'), readConfig('scan')]);
-  res.json({ cv, scan });
+  const [cv, scan, portalDiscovery] = await Promise.all([
+    readConfig('cv'), readConfig('scan'), readConfig('portal-discovery')
+  ]);
+  res.json({ cv, scan, 'portal-discovery': portalDiscovery });
 });
 
 router.put('/:process', requireAuth, async (req, res) => {
