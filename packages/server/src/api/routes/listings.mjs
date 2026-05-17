@@ -46,10 +46,20 @@ router.put('/:id', requireAuth, async (req, res) => {
   }
 });
 
+router.delete('/all', requireAuth, async (req, res) => {
+  try {
+    await dbRun('DELETE FROM cv_evaluations');
+    await dbRun('DELETE FROM listings');
+    res.json({ deleted: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.delete('/:id', requireAuth, async (req, res) => {
   try {
-    await dbRun('DELETE FROM cv_evaluations WHERE listing_id = ?', [req.params.id]);
-    await dbRun('DELETE FROM listings WHERE id = ?', [req.params.id]);
+    await dbRun('DELETE FROM cv_evaluations WHERE listing_id = $1', [req.params.id]);
+    await dbRun('DELETE FROM listings WHERE id = $1', [req.params.id]);
     res.json({ deleted: true, id: req.params.id });
   } catch (err) {
     res.status(500).json({ error: err.message });

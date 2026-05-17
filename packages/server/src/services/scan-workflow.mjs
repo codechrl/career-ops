@@ -1,8 +1,9 @@
 import { load as cheerioLoad } from 'cheerio';
 import { dbGet, dbRun, dbInsert } from '../loaders/database.mjs';
 import { evaluateBatch } from './scan-evaluate-client.mjs';
+import { fetchPortalJobs } from './scan-fetch-client.mjs';
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 function isRelevant(title, targetRole) {
   const stops = new Set(['senior', 'junior', 'lead', 'staff', 'principal', 'remote',
     'full', 'time', 'part', 'and', 'or', 'the', 'of', 'for', 'with']);
@@ -10,12 +11,6 @@ function isRelevant(title, targetRole) {
   if (!keywords.length) return true;
   const t = title.toLowerCase();
   return keywords.some(k => t.includes(k));
-}
-
-function stripHtml(html) {
-  const $ = cheerioLoad(html);
-  $('script, style').remove();
-  return $.text().replace(/\s+/g, ' ').trim();
 }
 
 function extractJD(html) {
@@ -35,284 +30,6 @@ function extractJD(html) {
 
 const UA = 'Mozilla/5.0 (career-ops/1.0; +https://github.com/career-ops)';
 
-async function safeFetch(url, opts = {}) {
-  const res = await fetch(url, { ...opts, headers: { 'User-Agent': UA, ...(opts.headers || {}) } });
-  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
-  return res;
-}
-
-// ─── Search providers — all return Array<{title, url, company, jd_text?}> ───
-async function searchRemotive(target, signal) {
-  const kw = target.target_role.split(/\s+/).slice(0, 4).join(' ');
-  const res = await safeFetch(`https://remotive.com/api/remote-jobs?search=${encodeURIComponent(kw)}&limit=50`, { signal });
-  const { jobs = [] } = await res.json();
-  return jobs.map(j => ({
-    title: j.title || '',
-    url: j.url || '',
-    company: j.company_name || '',
-    jd_text: j.description ? stripHtml(j.description).slice(0, 5000) : '',
-  }));
-}
-
-async function searchRemoteOK(target, signal) {
-  const tag = target.target_role.toLowerCase().split(/\s+/)[0];
-  const res = await safeFetch(`https://remoteok.com/api?tags=${encodeURIComponent(tag)}`, { signal });
-  const data = await res.json();
-  return (Array.isArray(data) ? data.slice(1) : []).filter(j => j.position).map(j => ({
-    title: j.position || '',
-    url: j.url || `https://remoteok.com/l/${j.slug || j.id}`,
-    company: j.company || '',
-    jd_text: j.description ? stripHtml(j.description).slice(0, 5000) : '',
-  }));
-}
-
-async function searchWeWorkRemotely(target, signal) {
-  const term = target.target_role.split(/\s+/).slice(0, 3).join(' ');
-  const res = await safeFetch(`https://weworkremotely.com/remote-jobs.rss?term=${encodeURIComponent(term)}`, { signal });
-  const xml = await res.text();
-  const $ = cheerioLoad(xml, { xmlMode: true });
-  return $('item').map((_, el) => {
-    const raw = $(el).find('title').first().text();
-    const title = raw.replace(/<!\[CDATA\[|\]\]>/g, '').trim();
-    const link = $(el).find('link').first().text().trim() || $(el).find('url').first().text().trim();
-    const company = $(el).find('author').first().text().replace(/<!\[CDATA\[|\]\]>/g, '').trim();
-    return { title, url: link, company, jd_text: '' };
-  }).get().filter(j => j.url && j.title);
-}
-
-async function searchHimalayas(target, signal) {
-  const q = target.target_role;
-  const res = await safeFetch(`https://himalayas.app/jobs/api?q=${encodeURIComponent(q)}&limit=30`, { signal });
-  const data = await res.json();
-  const jobs = data.jobs || data.data || [];
-  return jobs.map(j => ({
-    title: j.title || j.jobTitle || '',
-    url: j.url || j.applicationUrl ||
-      (j.company?.slug && j.slug ? `https://himalayas.app/companies/${j.company.slug}/jobs/${j.slug}` : ''),
-    company: j.companyName || j.company?.name || '',
-    jd_text: '',
-  }));
-}
-
-async function searchWorkingNomads(target, signal) {
-  const cat = encodeURIComponent(target.target_role.toLowerCase().split(/\s+/)[0]);
-  const res = await safeFetch(`https://www.workingnomads.com/api/exposed_jobs/?category=${cat}`, { signal });
-  const data = await res.json();
-  return (Array.isArray(data) ? data.slice(0, 40) : []).filter(j => j.title).map(j => ({
-    title: j.title || '',
-    url: j.url || '',
-    company: j.company_name || '',
-    jd_text: '',
-  }));
-}
-
-// ─── Playwright browser helper ───────────────────────────────────────────────
-async function withBrowser(fn) {
-  const { chromium } = await import('playwright');
-  const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
-  const browser = await chromium.launch({
-    executablePath,
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
-           '--disable-gpu', '--single-process'],
-  });
-  try { return await fn(browser); }
-  finally { await browser.close().catch(() => {}); }
-}
-
-async function scrapeJobsFromPage(browser, url, selectors) {
-  const page = await browser.newPage();
-  await page.setExtraHTTPHeaders({ 'User-Agent': UA });
-  try {
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 30_000 });
-    const jobs = await page.evaluate((sels) => {
-      const cards = document.querySelectorAll(sels.card);
-      return [...cards].slice(0, 50).map(el => ({
-        title: el.querySelector(sels.title)?.textContent?.trim() || '',
-        url: el.querySelector(sels.link)?.href || el.querySelector('a')?.href || '',
-        company: el.querySelector(sels.company)?.textContent?.trim() || '',
-      })).filter(j => j.title && j.url);
-    }, selectors);
-    return jobs.map(j => ({ ...j, jd_text: '' }));
-  } catch (err) {
-    return [{ __error: err.message }];
-  } finally {
-    await page.close().catch(() => {});
-  }
-}
-
-async function searchAiJobs(target, signal) {
-  const q = encodeURIComponent(target.target_role);
-  // Try multiple API patterns first
-  const apiUrls = [
-    `https://ai-jobs.net/jobs/api/?title=${q}&format=json`,
-    `https://ai-jobs.net/api/jobs/?search=${q}`,
-    `https://ai-jobs.net/api/v0/jobs/?search=${q}&format=json`,
-  ];
-  for (const url of apiUrls) {
-    try {
-      const res = await safeFetch(url, { signal });
-      const data = await res.json();
-      const jobs = data.results || data.jobs || (Array.isArray(data) ? data : []);
-      if (Array.isArray(jobs) && jobs.length > 0) {
-        return jobs.slice(0, 40).filter(j => j.title).map(j => ({
-          title: j.title || '',
-          url: j.url || j.absolute_url || j.link || `https://ai-jobs.net${j.path || ''}`,
-          company: j.company || j.company_name || '',
-          jd_text: '',
-        }));
-      }
-    } catch {}
-  }
-  // Fallback: Playwright scraping
-  try {
-    return await withBrowser(browser => scrapeJobsFromPage(browser,
-      `https://ai-jobs.net/search/?search-query=${q}`,
-      { card: '.job-card, article.job, li.job, [class*="job-item"]',
-        title: 'h2, h3, [class*="title"], [class*="job-title"]',
-        link: 'a[href*="job"], a[href*="/"]',
-        company: '[class*="company"], [class*="employer"]' }));
-  } catch (err) {
-    return [{ __error: `ai-jobs browser scrape failed: ${err.message}` }];
-  }
-}
-
-async function searchYCJobs(target, signal) {
-  const q = target.target_role.toLowerCase();
-  try {
-    // YC uses a JSON feed
-    const res = await safeFetch(`https://www.ycombinator.com/jobs?q=${encodeURIComponent(q)}`, { signal });
-    const html = await res.text();
-    const $ = cheerioLoad(html);
-    const jobs = [];
-    $('a[href*="/companies/"]').each((_, el) => {
-      const href = $(el).attr('href') || '';
-      const title = $(el).text().trim();
-      if (title && href && href.includes('/jobs')) {
-        jobs.push({ title, url: href.startsWith('http') ? href : `https://www.ycombinator.com${href}`, company: '', jd_text: '' });
-      }
-    });
-    return jobs.slice(0, 30);
-  } catch {
-    return [];
-  }
-}
-
-async function searchTrueUp(target, signal) {
-  const q = encodeURIComponent(target.target_role);
-  try {
-    const res = await safeFetch(`https://trueup.io/jobs?q=${q}&jobType=Full-Time`, { signal });
-    const html = await res.text();
-    const $ = cheerioLoad(html);
-    const jobs = [];
-    $('a[href*="/jobs/"]').each((_, el) => {
-      const href = $(el).attr('href') || '';
-      const title = $(el).find('[class*="title"], h3, h2').first().text().trim() || $(el).text().trim();
-      const company = $(el).find('[class*="company"]').first().text().trim();
-      if (title && href) jobs.push({ title, url: href.startsWith('http') ? href : `https://trueup.io${href}`, company, jd_text: '' });
-    });
-    return jobs.slice(0, 30);
-  } catch {
-    return [];
-  }
-}
-
-async function searchRemoteRocketship(target, signal) {
-  const q = encodeURIComponent(target.target_role);
-  try {
-    const res = await safeFetch(`https://remoterocketship.com/jobs?search=${q}`, { signal });
-    const html = await res.text();
-    const $ = cheerioLoad(html);
-    const jobs = [];
-    $('a[href*="/jobs/"]').each((_, el) => {
-      const href = $(el).attr('href') || '';
-      const title = $(el).find('h2, h3, [class*="title"]').first().text().trim() || $(el).text().trim();
-      const company = $(el).find('[class*="company"]').first().text().trim();
-      if (title && href) jobs.push({ title, url: href.startsWith('http') ? href : `https://remoterocketship.com${href}`, company, jd_text: '' });
-    });
-    return jobs.slice(0, 30);
-  } catch {
-    return [];
-  }
-}
-
-function getRoleSlugRemoteYeah(targetRole) {
-  const r = targetRole.toLowerCase();
-  if (r.includes('machine learning ops') || r.includes('mlops')) return 'machine-learning-ops-engineer';
-  if (r.includes('machine learning') || r.includes('ml engineer')) return 'machine-learning-engineer';
-  if (r.includes('artificial intelligence') || r.includes('ai engineer') || r.includes('ai native')) return 'artificial-intelligence-engineer';
-  if (r.includes('data scientist')) return 'data-scientist';
-  if (r.includes('data engineer')) return 'data-engineer';
-  if (r.includes('data analyst')) return 'data-analyst';
-  if (r.includes('data architect')) return 'data-architect';
-  if (r.includes('big data')) return 'big-data-engineer';
-  if (r.includes('business intelligence') && r.includes('analyst')) return 'business-intelligence-analyst';
-  if (r.includes('business intelligence')) return 'business-intelligence-engineer';
-  if (r.includes('developer relations') || r.includes('devrel')) return 'developer-relations-engineer';
-  if (r.includes('developer advocate')) return 'developer-advocate';
-  if (r.includes('devops')) return 'devops-engineer';
-  if (r.includes('site reliability') || (r.includes('sre') && r.includes('engineer'))) return 'site-reliability-engineer';
-  if (r.includes('platform engineer')) return 'platform-engineer';
-  if (r.includes('infrastructure engineer')) return 'infrastructure-engineer';
-  if (r.includes('cloud architect')) return 'cloud-architect';
-  if (r.includes('cloud engineer')) return 'cloud-engineer';
-  if (r.includes('full stack') || r.includes('fullstack') || r.includes('full-stack')) return 'full-stack-engineer';
-  if (r.includes('frontend') || r.includes('front-end') || r.includes('front end')) return 'frontend-engineer';
-  if (r.includes('backend') || r.includes('back-end') || r.includes('back end')) return 'backend-engineer';
-  if (r.includes('android')) return 'android-developer';
-  if (r.includes('ios developer') || r.includes('ios engineer')) return 'ios-developer';
-  if (r.includes('mobile')) return 'cross-platform-mobile-developer';
-  if (r.includes('blockchain')) return 'blockchain-engineer';
-  if (r.includes('web3')) return 'web3-developer';
-  if (r.includes('web developer') || r.includes('web dev')) return 'web-developer';
-  if (r.includes('database admin') || r.includes('dba')) return 'database-administrator';
-  if (r.includes('database engineer')) return 'database-engineer';
-  if (r.includes('network admin')) return 'network-administrator';
-  if (r.includes('network engineer')) return 'network-engineer';
-  if (r.includes('cybersecurity') || r.includes('security engineer')) return 'cybersecurity-engineer';
-  if (r.includes('quality assurance') || r.includes('qa engineer') || r.includes('test engineer')) return 'qa-engineer';
-  if (r.includes('game developer') || r.includes('game engineer')) return 'game-engineer';
-  if (r.includes('prompt engineer')) return 'prompt-engineer';
-  if (r.includes('software architect')) return 'software-architect';
-  if (r.includes('solutions architect') || r.includes('solution architect')) return 'solution-architect';
-  if (r.includes('solutions engineer')) return 'solutions-engineer';
-  if (r.includes('system admin') || r.includes('sysadmin')) return 'system-administrator';
-  if (r.includes('systems engineer')) return 'systems-engineer';
-  if (r.includes('technical lead') || r.includes('tech lead')) return 'technical-lead';
-  return 'software-engineer';
-}
-
-async function searchRemoteYeah(target, signal) {
-  const slug = getRoleSlugRemoteYeah(target.target_role);
-  const feedUrl = `https://remoteyeah.com/remote-${slug}-jobs.xml`;
-  const res = await safeFetch(feedUrl, { signal });
-  const xml = await res.text();
-  const $ = cheerioLoad(xml, { xmlMode: true });
-  return $('item').map((_, el) => {
-    const titleRaw = $(el).find('title').text().replace(/<!\[CDATA\[|\]\]>/g, '').trim();
-    const title = titleRaw.replace(/^Remote\s+/i, '').replace(/\s+at\s+[^a-z].*$/i, '').trim() || titleRaw;
-    const company = $(el).find('company').text().replace(/<!\[CDATA\[|\]\]>/g, '').trim();
-    const descHtml = $(el).find('description').text();
-    const jd_text = stripHtml(descHtml).slice(0, 5000);
-    const link = $(el).find('link').text().trim();
-    return { title, url: link, company, jd_text };
-  }).get().filter(j => j.title && j.url);
-}
-
-// Map portal.provider → search function
-const SEARCH_FNS = {
-  remotive:          searchRemotive,
-  remoteok:          searchRemoteOK,
-  weworkremotely:    searchWeWorkRemotely,
-  himalayas:         searchHimalayas,
-  workingnomads:     searchWorkingNomads,
-  'ai-jobs':         searchAiJobs,
-  ycjobs:            searchYCJobs,
-  trueup:            searchTrueUp,
-  remoterocketship:  searchRemoteRocketship,
-  remoteyeah:        searchRemoteYeah,
-};
-
 // ─── Concurrency helper ───────────────────────────────────────────────────────
 async function pMap(items, fn, concurrency = 6) {
   const results = [];
@@ -329,14 +46,13 @@ async function pMap(items, fn, concurrency = 6) {
 
 // ─── ScanWorkflow ─────────────────────────────────────────────────────────────
 export class ScanWorkflow {
-  constructor({ targetIds = [], portalIds = [], scanRunId, signal, onEvent, useBrowser = false }) {
-    this.targetIds  = targetIds;
-    this.portalIds  = portalIds;
-    this.scanRunId  = scanRunId;
-    this.signal     = signal || new AbortController().signal;
-    this.onEvent    = onEvent || (() => {});
-    this.useBrowser = useBrowser;
-    this.stats      = { new: 0, skipped: 0, errors: 0 };
+  constructor({ targetIds = [], portalIds = [], scanRunId, signal, onEvent }) {
+    this.targetIds = targetIds;
+    this.portalIds = portalIds;
+    this.scanRunId = scanRunId;
+    this.signal    = signal || new AbortController().signal;
+    this.onEvent   = onEvent || (() => {});
+    this.stats     = { new: 0, skipped: 0, errors: 0 };
   }
 
   emit(type, message, extra = {}) {
@@ -368,34 +84,40 @@ export class ScanWorkflow {
       portals = (await dbRun('SELECT * FROM portals WHERE enabled = 1')).rows;
     }
 
-    const searchablePortals = portals.filter(p => SEARCH_FNS[p.provider]);
-    const unsupported = portals.filter(p => !SEARCH_FNS[p.provider]);
-    if (unsupported.length) {
-      this.emit('info', `[Fetch] Skipping unsupported portals: ${unsupported.map(p => p.name).join(', ')}`, { agent: 'fetch' });
+    const fetchablePortals = portals.filter(p => {
+      const cfg = p.search_config;
+      if (!cfg) return false;
+      const method = cfg.method || '';
+      if (['unknown', 'unsupported', 'playwright', 'ats'].includes(method)) return false;
+      return !!cfg.url_template;
+    });
+
+    const skippedPortals = portals.filter(p => !fetchablePortals.includes(p));
+    if (skippedPortals.length) {
+      this.emit('info',
+        `[Fetch] Skipping ${skippedPortals.length} portal(s) without search config: ${skippedPortals.map(p => p.name).join(', ')}`,
+        { agent: 'fetch' });
     }
-    if (!searchablePortals.length) {
-      this.emit('warning', 'No searchable portals available.');
+    if (!fetchablePortals.length) {
+      this.emit('warning', 'No portals with search config available. Run portal discovery first.');
       return;
     }
 
-    // LLM config is read by scan-evaluate-client.mjs directly from DB
-
-    // ── STAGE 1: Fetch all portals × targets in parallel ─────────────────────
+    // ── STAGE 1: Fetch all portals × targets via Python agent ────────────────
     this.emit('progress',
-      `[Fetch] Searching ${searchablePortals.length} portal(s) × ${targets.length} target(s) in parallel…`,
+      `[Fetch] Searching ${fetchablePortals.length} portal(s) × ${targets.length} target(s)…`,
       { agent: 'fetch' });
 
-    const pairs = searchablePortals.flatMap(portal => targets.map(target => ({ portal, target })));
+    const pairs = fetchablePortals.flatMap(portal => targets.map(target => ({ portal, target })));
 
     const fetchResults = await pMap(pairs, async ({ portal, target }) => {
       if (this.signal.aborted) return [];
-      const fn = SEARCH_FNS[portal.provider];
-      const raw = await fn(target, this.signal);
+      const raw = await fetchPortalJobs(portal, target.target_role);
       const newJobs = [];
       for (const job of raw) {
         if (!job.url || !job.title) continue;
         if (!isRelevant(job.title, target.target_role)) continue;
-        const exists = await dbGet('SELECT 1 FROM listings WHERE source_url = ?', [job.url]);
+        const exists = await dbGet('SELECT 1 FROM listings WHERE source_url = $1', [job.url]);
         if (exists) { this.stats.skipped++; continue; }
         newJobs.push({ ...job, target, portalName: portal.name });
       }
@@ -403,7 +125,7 @@ export class ScanWorkflow {
         `[Fetch] ${portal.name} × "${target.target_role}": ${newJobs.length} new`,
         { agent: 'fetch' });
       return newJobs;
-    }, 8); // 8 parallel portal×target fetches
+    }, 8);
 
     const pending = fetchResults.flat().filter(j => !j.__error);
     const fetchErrors = fetchResults.filter(r => r?.__error);
@@ -420,7 +142,7 @@ export class ScanWorkflow {
     this.emit('progress', `[Fetch] ${pending.length} new listings to process`, { agent: 'fetch' });
 
     // ── STAGE 2: Scrape JDs in parallel (only where jd_text is empty) ─────────
-    this.emit('progress', `[Scrape] Fetching job descriptions in parallel…`, { agent: 'scrape' });
+    this.emit('progress', `[Scrape] Fetching job descriptions…`, { agent: 'scrape' });
     const toScrape = pending.filter(j => !j.jd_text || j.jd_text.length < 200);
     this.emit('progress', `[Scrape] ${toScrape.length} URLs to scrape`, { agent: 'scrape' });
 
@@ -437,7 +159,7 @@ export class ScanWorkflow {
         if (res.ok) {
           job.jd_text = extractJD(await res.text());
           this.emit('progress',
-            `[Scrape] (${idx}/${toScrape.length}) "${job.title}" @ ${job.company} — ${job.jd_text.length} chars`,
+            `[Scrape] (${idx}/${toScrape.length}) "${job.title}" — ${job.jd_text.length} chars`,
             { agent: 'scrape' });
         } else {
           this.emit('warning',
@@ -449,12 +171,11 @@ export class ScanWorkflow {
           `[Scrape] (${idx}/${toScrape.length}) failed "${job.title}" — ${err.message}`,
           { agent: 'scrape' });
       }
-    }, 10); // 10 parallel scrapes
+    }, 10);
 
-    // ── STAGE 3: Evaluate with LLM in parallel (batched) ─────────────────────
-    this.emit('progress', `[Evaluate] Scoring ${pending.length} listings via Python agent…`, { agent: 'evaluate' });
+    // ── STAGE 3: Evaluate with Python agent (batched per target) ─────────────
+    this.emit('progress', `[Evaluate] Scoring ${pending.length} listings…`, { agent: 'evaluate' });
 
-    // Group pending jobs by target_id so each target gets one batch call
     const byTarget = new Map();
     for (const job of pending) {
       const tid = job.target.id;
@@ -466,28 +187,37 @@ export class ScanWorkflow {
       if (this.signal.aborted) break;
       const target = group[0].target;
       this.emit('progress',
-        `[Evaluate] Sending ${group.length} jobs for target "${target.target_role}" to Python agent…`,
+        `[Evaluate] ${group.length} jobs for "${target.target_role}"…`,
         { agent: 'evaluate' });
       try {
         const evalResults = await evaluateBatch(group, target, 3);
-        // Map results back by URL
         const byUrl = new Map(evalResults.map(r => [r.url, r.scores]));
         for (const job of group) {
           const scores = byUrl.get(job.url);
+          job.scores = scores || {
+            role_score: 0, industry_score: 0, location_score: 0,
+            preference_score: 0, overall_score: 0, preference_scores: {},
+            recommendation: 'Research more', recommendation_reason: 'No result returned.',
+            next_action: 'Reach out', next_action_detail: '',
+          };
           if (scores) {
-            job.scores = scores;
             this.emit('progress',
-              `[Evaluate] "${job.title}" → overall=${scores.overall_score} role=${scores.role_score} [${scores.recommendation}]`,
+              `[Evaluate] "${job.title}" → score=${scores.overall_score} [${scores.recommendation}]`,
               { agent: 'evaluate' });
-          } else {
-            job.scores = { role_score: 0, industry_score: 0, location_score: 0, preference_score: 0, overall_score: 0, preference_scores: {}, recommendation: 'Research more', recommendation_reason: 'No result returned.', next_action: 'Reach out', next_action_detail: '' };
           }
         }
       } catch (err) {
-        this.emit('error', `[Evaluate] batch failed for target "${target.target_role}": ${err.message}`, { agent: 'evaluate' });
+        this.emit('error',
+          `[Evaluate] batch failed for "${target.target_role}": ${err.message}`,
+          { agent: 'evaluate' });
         this.stats.errors += group.length;
         for (const job of group) {
-          job.scores = { role_score: 0, industry_score: 0, location_score: 0, preference_score: 0, overall_score: 0, preference_scores: {}, recommendation: 'Research more', recommendation_reason: 'Evaluation failed.', next_action: 'Reach out', next_action_detail: '' };
+          job.scores = {
+            role_score: 0, industry_score: 0, location_score: 0,
+            preference_score: 0, overall_score: 0, preference_scores: {},
+            recommendation: 'Research more', recommendation_reason: 'Evaluation failed.',
+            next_action: 'Reach out', next_action_detail: '',
+          };
         }
       }
     }
@@ -508,7 +238,7 @@ export class ScanWorkflow {
         const listingId = await dbInsert(
           `INSERT INTO listings
             (company, role, score, status, source_url, source_portal, scan_run_id, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
           [
             job.company || job.portalName,
             job.title,
@@ -526,7 +256,7 @@ export class ScanWorkflow {
              preference_score, overall_score, industries, target_location, preferences,
              preference_scores, next_action, next_action_reason, recommendation, recommendation_reason,
              created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
           [
             listingId,
             job.target.target_role,
@@ -563,7 +293,7 @@ export class ScanWorkflow {
 
   async saveStats() {
     await dbRun(
-      'UPDATE scan_runs SET new_count = ?, skipped_count = ?, error_count = ? WHERE id = ?',
+      'UPDATE scan_runs SET new_count = $1, skipped_count = $2, error_count = $3 WHERE id = $4',
       [this.stats.new, this.stats.skipped, this.stats.errors, this.scanRunId],
     );
   }
