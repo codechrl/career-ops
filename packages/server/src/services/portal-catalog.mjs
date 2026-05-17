@@ -83,7 +83,7 @@ export async function verifyPortal(portalId) {
  * The agent fetches pages, tests endpoints, reasons, and saves the found search_config.
  */
 export async function refreshAllPortals(onEvent, signal) {
-  const portals = await dbAll('SELECT * FROM portals ORDER BY id ASC');
+  const portals = await dbAll("SELECT * FROM portals WHERE enabled = 1 ORDER BY id ASC");
   const results = [];
   const llm = await getLLMForProcess('portal-discovery');
 

@@ -6,6 +6,7 @@
 import { generateText, tool } from 'ai';
 import { z } from 'zod';
 import { getAISdkModel } from '../llm/ai-sdk-model.mjs';
+import { getLLMKey } from '../models/llm-key.mjs';
 
 const MAX_STEPS = 14;
 const FETCH_TIMEOUT_MS = 12_000;
@@ -90,11 +91,34 @@ async function extractLinks({ url }) {
   return { links: [...links].slice(0, 40), total_found: links.size };
 }
 
+async function googleSearch({ query }) {
+  if (!query) return { error: 'query is required' };
+  const keyRow = await getLLMKey('serpapi');
+  if (!keyRow?.api_key) return { error: 'SerpAPI key not configured. Add it in Settings → API Keys.' };
+  try {
+    const url = `https://serpapi.com/search.json?engine=google&q=${encodeURIComponent(query)}&num=10&api_key=${keyRow.api_key}`;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+    const res = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(timer);
+    if (!res.ok) return { error: `SerpAPI error: HTTP ${res.status}` };
+    const data = await res.json();
+    const results = (data.organic_results || []).map(r => ({
+      title: r.title,
+      link: r.link,
+      snippet: r.snippet,
+    }));
+    return { results, total: results.length };
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
 // ── System prompt ──────────────────────────────────────────────────────────────
 
 const SYSTEM_PROMPT = `You are a job board search analyst. Your task is to discover the best programmatic way to search for job listings on a given job portal.
 
-Use the provided tools to explore the portal: fetch pages, extract links, and test search URL templates.
+Use the provided tools to explore the portal: fetch pages, extract links, test search URL templates, and if stuck, use google_search to find API documentation or developer guides.
 
 Methods to identify:
 - rss_feed: Portal exposes an RSS/Atom feed (prefer this)
@@ -115,8 +139,9 @@ Strategy:
 1. Fetch the main page / /jobs path to understand the portal structure
 2. Use extract_links to find API/RSS/search endpoints
 3. Test promising templates with test_search
-4. Prefer JSON API > RSS > HTML scrape > Playwright
-5. Confirm your best candidate returns actual job data, then call finish.`;
+4. If the portal structure is unclear, use google_search to find developer docs or API info (e.g. "site:portal.com api jobs" or "portal.com RSS feed")
+5. Prefer JSON API > RSS > HTML scrape > Playwright
+6. Confirm your best candidate returns actual job data, then call finish.`;
 
 // ── Agent ──────────────────────────────────────────────────────────────────────
 
@@ -174,6 +199,15 @@ export async function runPortalDiscoveryAgent(portal, _llm, onLog, signal) {
         if (signal?.aborted) return { error: 'Cancelled' };
         log(`  → extract_links(${url})`);
         return extractLinks({ url });
+      },
+    }),
+    google_search: tool({
+      description: 'Search Google via SerpAPI. Use this to find API docs, RSS feeds, or developer guides for the portal when direct exploration is unclear.',
+      parameters: z.object({ query: z.string() }),
+      execute: async ({ query }) => {
+        if (signal?.aborted) return { error: 'Cancelled' };
+        log(`  → google_search(${query})`);
+        return googleSearch({ query });
       },
     }),
     finish: tool({

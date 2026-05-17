@@ -6,6 +6,7 @@ const PROVIDERS = [
   { id: 'gemini',     label: 'Google Gemini',    url: 'https://aistudio.google.com/apikey' },
   { id: 'openai',     label: 'OpenAI',           url: 'https://platform.openai.com/api-keys' },
   { id: 'anthropic',  label: 'Anthropic Claude', url: 'https://console.anthropic.com/settings/keys' },
+  { id: 'serpapi',    label: 'SerpAPI (Google Search)', url: 'https://serpapi.com/manage-api-key' },
 ];
 const PROVIDER_LABELS = Object.fromEntries(PROVIDERS.map(p => [p.id, p.label]));
 const PROVIDER_URLS   = Object.fromEntries(PROVIDERS.map(p => [p.id, p.url]));
