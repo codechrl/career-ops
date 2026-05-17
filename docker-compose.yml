@@ -1,18 +1,35 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: career_ops
+      POSTGRES_USER: career_ops
+      POSTGRES_PASSWORD: career_ops_pass
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U career_ops"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   server:
     build:
       context: .
       dockerfile: Dockerfile.server
-    ports:
-      - '3000:3000'
     env_file:
       - .env
+    environment:
+      DATABASE_URL: postgresql://career_ops:career_ops_pass@postgres:5432/career_ops
     volumes:
-      - .:/app
-      - db_data:/app/data
+      - app_data:/app/data
       - ./reports:/app/reports
       - ./config:/app/config
       - ./output:/app/output
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
   web:
@@ -26,4 +43,5 @@ services:
     restart: unless-stopped
 
 volumes:
-  db_data:
+  pg_data:
+  app_data:

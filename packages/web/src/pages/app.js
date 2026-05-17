@@ -1,11 +1,9 @@
 import { renderLogin } from './login.js';
 import { renderSidebar } from './sidebar.js';
 import { renderDashboard } from './dashboard.js';
-import { renderScan } from './scan.js';
-import { renderSearch } from './search.js';
-import { renderCV } from './cv.js';
-import { renderListings } from './listings.js';
+import { renderJob } from './job.js';
 import { renderPipeline } from './pipeline.js';
+import { renderSettings } from './settings.js';
 import { api } from '../api.js';
 
 export function renderApp(root) {
@@ -44,10 +42,8 @@ function renderMainApp(root) {
 
   function onNav(page) {
     if (page === 'dashboard') renderDashboard(document.getElementById('main'));
-    else if (page === 'scan') renderScan(document.getElementById('main'));
-    else if (page === 'search') renderSearch(document.getElementById('main'));
-    else if (page === 'cv') renderCV(document.getElementById('main'));
-    else if (page === 'listings') renderListings(document.getElementById('main'));
+    else if (page === 'job') renderJob(document.getElementById('main'));
     else if (page === 'pipeline') renderPipeline(document.getElementById('main'));
+    else if (page === 'settings') renderSettings(document.getElementById('main'));
   }
 }

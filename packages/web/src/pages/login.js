@@ -1,16 +1,20 @@
 export function renderLogin(root, onLogin) {
   root.innerHTML = `
-    <div style="display:flex;justify-content:center;align-items:center;min-height:100vh;">
-      <div style="background:#1e1e2e;padding:40px;border-radius:12px;width:360px;">
-        <h1 style="margin:0 0 24px 0;text-align:center;">career-ops</h1>
+    <div class="login-wrap">
+      <div class="login-box">
+        <div class="login-brand">career<span>-ops</span></div>
         <form id="login-form">
-          <label for="username">Username</label><br>
-          <input type="text" id="username" name="username" value="kurniawan" style="width:100%;margin-bottom:16px;padding:8px;" />
-          <label for="password">Password</label><br>
-          <input type="password" id="password" name="password" style="width:100%;margin-bottom:24px;padding:8px;" />
-          <button type="submit" style="width:100%;padding:10px;background:#89b4fa;border:none;font-weight:600;cursor:pointer;">Login</button>
+          <div class="form-group">
+            <label>Username</label>
+            <input type="text" id="username" name="username" value="kurniawan" autocomplete="username">
+          </div>
+          <div class="form-group">
+            <label>Password</label>
+            <input type="password" id="password" name="password" autocomplete="current-password">
+          </div>
+          <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;margin-top:8px">Sign in</button>
         </form>
-        <div id="login-error" style="color:#f38ba8;margin-top:12px;text-align:center;"></div>
+        <div id="login-error" class="alert alert-error" style="display:none;margin-top:12px"></div>
       </div>
     </div>
   `;

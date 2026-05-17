@@ -15,6 +15,7 @@ import listingsRouter from './routes/listings.mjs';
 import pipelineRouter from './routes/pipeline.mjs';
 import authRouter from './routes/auth.mjs';
 import llmKeysRouter from './routes/llm-keys.mjs';
+import jobTargetRouter from './routes/job-target.mjs';
 dotenv.config();
 
 const app = express();
@@ -34,6 +35,7 @@ app.use('/api/listings', listingsRouter);
 app.use('/api/pipeline', pipelineRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/llm-keys', llmKeysRouter);
+app.use('/api/job-target', jobTargetRouter);
 
 app.get('/', (req, res) => {
   res.send('career-ops server running');

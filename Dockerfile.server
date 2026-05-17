@@ -14,8 +14,7 @@ COPY packages/server/package.json ./packages/server/
 COPY modes/ ./modes/
 COPY providers/ ./providers/
 COPY config/ ./config/
-COPY cv.md ./cv.md
-COPY portals.yml ./portals.yml
+COPY templates/portals.example.yml ./portals.yml
 VOLUME ["/app/data", "/app/reports", "/app/config", "/app/output"]
 EXPOSE 3000
 ENV NODE_ENV=production

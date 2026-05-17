@@ -1,29 +1,31 @@
 import express from 'express';
-import fs from 'fs';
-import path from 'path';
-import yaml from 'js-yaml';
+import { listPortals, addPortal, updatePortal, deletePortal } from '../../models/portal.mjs';
+import { requireAuth } from '../middleware/auth.mjs';
 
 const router = express.Router();
-const PORTALS_PATH = path.resolve('portals.yml');
 
-router.get('/', (req, res) => {
-  try {
-    const data = fs.readFileSync(PORTALS_PATH, 'utf-8');
-    const portals = yaml.load(data);
-    res.json(portals);
-  } catch (e) {
-    res.status(500).json({ error: 'Failed to read portals' });
-  }
+router.get('/', requireAuth, async (req, res) => {
+  res.json(await listPortals());
 });
 
-router.put('/', (req, res) => {
-  try {
-    const yamlStr = yaml.dump(req.body);
-    fs.writeFileSync(PORTALS_PATH, yamlStr, 'utf-8');
-    res.json({ saved: true });
-  } catch (e) {
-    res.status(500).json({ error: 'Failed to save portals' });
-  }
+router.post('/', requireAuth, async (req, res) => {
+  const { name, provider, careers_url, auth_type, enabled } = req.body;
+  if (!name) return res.status(400).json({ error: 'name required' });
+  const portal = await addPortal({ name, provider, careers_url, auth_type, enabled });
+  res.json(portal);
+});
+
+router.put('/:id', requireAuth, async (req, res) => {
+  const { name, provider, careers_url, auth_type, enabled } = req.body;
+  if (!name) return res.status(400).json({ error: 'name required' });
+  const portal = await updatePortal(req.params.id, { name, provider, careers_url, auth_type, enabled });
+  if (!portal) return res.status(404).json({ error: 'not found' });
+  res.json(portal);
+});
+
+router.delete('/:id', requireAuth, async (req, res) => {
+  await deletePortal(req.params.id);
+  res.json({ deleted: true });
 });
 
 export default router;

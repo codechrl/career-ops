@@ -3,8 +3,8 @@
 /** @typedef {import('./_types.js').LlmMessage} LlmMessage */
 /** @typedef {import('./_types.js').LlmOptions} LlmOptions */
 
-const DEFAULT_MODEL = 'deepseek-chat';
-const DEFAULT_BASE = 'https://api.deepseek.com/v1';
+const DEFAULT_MODEL = 'gpt-4o';
+const DEFAULT_BASE = 'https://api.openai.com/v1';
 
 /** @type {(messages: LlmMessage[], opts: LlmOptions, apiKey: string) => Promise<string>} */
 async function chatCompletion(messages, opts, apiKey) {
@@ -35,12 +35,12 @@ async function chatCompletion(messages, opts, apiKey) {
 
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      throw new Error(`DeepSeek HTTP ${res.status}: ${text.slice(0, 500)}`);
+      throw new Error(`OpenAI HTTP ${res.status}: ${text.slice(0, 500)}`);
     }
 
     const json = await res.json();
     const content = json?.choices?.[0]?.message?.content;
-    if (!content) throw new Error('DeepSeek returned empty response');
+    if (!content) throw new Error('OpenAI returned empty response');
     return content;
   } finally {
     clearTimeout(timer);
@@ -49,10 +49,10 @@ async function chatCompletion(messages, opts, apiKey) {
 
 /** @type {LlmProvider} */
 export default {
-  id: 'deepseek',
+  id: 'openai',
   chat: (messages, opts = {}) => {
-    const key = process.env.DEEPSEEK_API_KEY;
-    if (!key) throw new Error('DEEPSEEK_API_KEY not set in environment');
+    const key = process.env.OPENAI_API_KEY;
+    if (!key) throw new Error('OPENAI_API_KEY not set in environment');
     return chatCompletion(messages, opts, key);
   },
 };
