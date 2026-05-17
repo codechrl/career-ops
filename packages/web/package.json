@@ -1,0 +1,13 @@
+{
+  "name": "career-ops-web",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bunx vite",
+    "build": "bunx vite build",
+    "preview": "bunx vite preview"
+  },
+  "devDependencies": {
+    "vite": "^5.4.1"
+  }
+}

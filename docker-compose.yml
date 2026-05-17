@@ -1,0 +1,29 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    ports:
+      - '3000:3000'
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - db_data:/app/data
+      - ./reports:/app/reports
+      - ./config:/app/config
+      - ./output:/app/output
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    ports:
+      - '8080:80'
+    depends_on:
+      - server
+    restart: unless-stopped
+
+volumes:
+  db_data:

@@ -77,7 +77,16 @@ Built by someone who used it to evaluate 740+ job offers, generate 100+ tailored
 | **Dashboard TUI** | Terminal UI to browse, filter, and sort your pipeline |
 | **Human-in-the-Loop** | AI evaluates and recommends, you decide and act. The system never submits an application -- you always have the final call |
 | **Pipeline Integrity** | Automated merge, dedup, status normalization, health checks |
+## Web Interface and Portal Defaults
 
+A new web UI is available under `web/` for browser-based control of the pipeline. It includes:
+
+- scan control and real-time progress
+- job search prompt + AI-generated search plan
+- CV upload and profile management
+- pipeline inbox, listings tracker, and portal CRUD
+
+The default `portals.yml` ships with broad discovery queries for Ashby, Greenhouse, Lever, Workable, and more. New installs get a usable portal scanner out of the box.
 ## Quick Start
 
 ```bash
@@ -107,6 +116,13 @@ claude   # Open Claude Code in this directory
 
 # 6. Start using
 # Paste a job URL or run /career-ops
+
+Docker Compose:
+```bash
+docker compose up --build
+```
+
+Open http://localhost:8080 for the web UI and http://localhost:3000/api for the backend.
 ```
 
 > **The system is designed to be customized by Claude itself.** Modes, archetypes, scoring weights, negotiation scripts -- just ask Claude to change them. It reads the same files it uses, so it knows exactly what to edit.
