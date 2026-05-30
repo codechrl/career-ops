@@ -15,8 +15,10 @@ export async function updateUserPassword(username, passwordHash) {
 }
 
 export async function ensureDefaultUser() {
-  const user = await getUserByUsername('kurniawan');
-  if (!user) await createUser('kurniawan', hashPassword('changeme'));
+  const username = process.env.DEFAULT_ADMIN_USERNAME || 'admin';
+  const password = process.env.DEFAULT_ADMIN_PASSWORD || 'changeme';
+  const user = await getUserByUsername(username);
+  if (!user) await createUser(username, hashPassword(password));
 }
 
 export function hashPassword(password) {

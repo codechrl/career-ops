@@ -6,7 +6,7 @@ export function renderLogin(root, onLogin) {
         <form id="login-form">
           <div class="form-group">
             <label>Username</label>
-            <input type="text" id="username" name="username" value="kurniawan" autocomplete="username">
+            <input type="text" id="username" name="username" autocomplete="username">
           </div>
           <div class="form-group">
             <label>Password</label>

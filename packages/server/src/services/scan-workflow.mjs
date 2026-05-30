@@ -88,8 +88,8 @@ export class ScanWorkflow {
       const cfg = p.search_config;
       if (!cfg) return false;
       const method = cfg.method || '';
-      if (['unknown', 'unsupported', 'playwright', 'ats'].includes(method)) return false;
-      return !!cfg.url_template;
+      if (['unknown', 'unsupported', 'ats'].includes(method)) return false;
+      return !!cfg.url_template || (method === 'playwright' && !!p.careers_url);
     });
 
     const skippedPortals = portals.filter(p => !fetchablePortals.includes(p));

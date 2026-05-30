@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from discovery_agent import run_discovery_agent
 from scan_agent import run_batch_evaluate
 from fetch_jobs_agent import run_fetch_jobs
+from playwright_fetch_agent import run_playwright_fetch
 
 app = FastAPI(title="career-ops agent service")
 
@@ -60,6 +61,27 @@ class FetchJobsRequest(BaseModel):
     limit: int = 50
 
 
+# ── Playwright fetch models ───────────────────────────────────────────────────
+
+class PlaywrightCredentials(BaseModel):
+    username: Optional[str] = None
+    password: Optional[str] = None
+    totp_secret: Optional[str] = None
+    login_url: Optional[str] = None
+
+
+class PlaywrightFetchRequest(BaseModel):
+    portal_id: int
+    portal_name: str
+    jobs_url: str
+    login_url: Optional[str] = None
+    credentials: PlaywrightCredentials = PlaywrightCredentials()
+    session_state: Optional[str] = None
+    target_role: str
+    limit: int = 50
+    llm: LLMConfig
+
+
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -106,6 +128,21 @@ def fetch_jobs(req: FetchJobsRequest):
         limit=req.limit,
     )
     return {"jobs": jobs}
+
+
+@app.post("/fetch-jobs-browser")
+def fetch_jobs_browser(req: PlaywrightFetchRequest):
+    """Disabled — browser-use/Playwright has been removed.
+
+    Returns an empty job list. Update the portal's search_config.method to
+    'jobspy' or 'brightdata_linkedin' and use /fetch-jobs instead.
+    """
+    print(
+        f"[main] /fetch-jobs-browser called for {req.portal_name} — "
+        "Playwright is DISABLED. Returning empty result.",
+        flush=True,
+    )
+    return {"jobs": [], "session_state": ""}
 
 
 if __name__ == "__main__":
