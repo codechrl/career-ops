@@ -1,7 +1,7 @@
 """
 Job fetching agent — fetches job listings from portals based on their search_config.
-Supports: json_api, rss_feed, html_scrape.
-Skips: playwright, ats, unsupported, unknown.
+Supports: json_api, rss_feed, html_scrape, jobspy, brightdata_linkedin.
+Skips: playwright (disabled), ats, unsupported, unknown.
 """
 
 import re
@@ -21,6 +21,15 @@ HEADERS = {
 }
 TIMEOUT = 20
 SKIP_METHODS = {"unknown", "unsupported", "playwright", "ats"}
+
+# Lazy imports for optional agents
+def _jobspy_fetch(search_config, target_role, limit):
+    from jobspy_agent import run_jobspy_fetch
+    return run_jobspy_fetch(search_config, target_role, limit)
+
+def _brightdata_fetch(search_config, target_role, limit):
+    from brightdata_agent import run_brightdata_linkedin_fetch
+    return run_brightdata_linkedin_fetch(search_config, target_role, limit)
 
 
 # ── URL builder ───────────────────────────────────────────────────────────────
@@ -248,6 +257,14 @@ def run_fetch_jobs(
 
     print(f"[fetch-jobs] {portal_name} method={method}", flush=True)
 
+    # ── Delegated methods (no url_template required) ──────────────────────────
+    if method == "jobspy":
+        return _jobspy_fetch(search_config, target_role, limit)
+
+    if method == "brightdata_linkedin":
+        return _brightdata_fetch(search_config, target_role, limit)
+
+    # ── Standard HTTP methods ─────────────────────────────────────────────────
     if method in SKIP_METHODS:
         print(f"[fetch-jobs] {portal_name} skipped (method={method})", flush=True)
         return []

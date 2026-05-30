@@ -167,6 +167,9 @@ export async function initDatabase() {
   await pool.query(`ALTER TABLE portals ADD COLUMN IF NOT EXISTS catalog_status TEXT DEFAULT 'unknown'`);
   await pool.query(`ALTER TABLE portals ADD COLUMN IF NOT EXISTS last_catalog_refresh TEXT`);
 
+  // Playwright auth credentials (encrypted at rest is TODO; stored as JSONB for now)
+  await pool.query(`ALTER TABLE portals ADD COLUMN IF NOT EXISTS auth_credentials JSONB`);
+
   // Migration: add remoteyeah for existing installs that don't have it yet
   await pool.query(`
     INSERT INTO portals (name, provider, careers_url, auth_type, enabled, created_at, updated_at)

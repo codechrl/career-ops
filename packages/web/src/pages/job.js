@@ -210,6 +210,37 @@ export function renderJob(root) {
             <span id="pcp-msg" style="font-size:12px;align-self:center"></span>
           </div>
         </form>
+
+        <!-- Playwright credentials (shown only when method=playwright) -->
+        <div id="pcp-creds-section" style="display:none;border-top:1px solid var(--border);margin-top:16px;padding-top:16px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:10px">Login Credentials</div>
+          <form id="portal-creds-form" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <div class="form-group mb-0" style="grid-column:1/-1">
+              <label>Login URL</label>
+              <input type="url" id="pcc-login-url" placeholder="https://example.com/login" style="font-family:monospace;font-size:12px">
+            </div>
+            <div class="form-group mb-0">
+              <label>Username / Email</label>
+              <input type="text" id="pcc-username" placeholder="you@email.com" autocomplete="off">
+            </div>
+            <div class="form-group mb-0">
+              <label>Password <span id="pcc-has-password" style="font-size:11px;color:var(--muted)"></span></label>
+              <input type="password" id="pcc-password" placeholder="Leave blank to keep existing" autocomplete="new-password">
+            </div>
+            <div class="form-group mb-0" style="grid-column:1/-1">
+              <label>TOTP Secret <span style="font-size:11px;color:var(--muted)">(optional — base32 secret for 2FA)</span>
+                <span id="pcc-has-totp" style="font-size:11px;color:var(--muted)"></span>
+              </label>
+              <input type="password" id="pcc-totp" placeholder="BASE32SECRETXXX (leave blank to keep existing)" autocomplete="off" style="font-family:monospace;font-size:12px">
+            </div>
+            <div style="grid-column:1/-1;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <button type="submit" class="btn btn-primary btn-sm">Save Credentials</button>
+              <button type="button" class="btn btn-danger btn-sm" id="pcc-delete-btn">Delete Credentials</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="pcc-clear-session-btn">Clear Saved Session</button>
+              <span id="pcc-msg" style="font-size:12px"></span>
+            </div>
+          </form>
+        </div>
       </div>
 
       <!-- Catalog refresh section -->
@@ -898,6 +929,75 @@ function openCatalogPanel(root, portal) {
   root.querySelector('#pcp-msg').textContent = '';
   panel.style.display = 'block';
   panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+  // Toggle credentials section based on method
+  const credsSection = root.querySelector('#pcp-creds-section');
+  credsSection.style.display = cfg.method === 'playwright' ? 'block' : 'none';
+  if (cfg.method === 'playwright') {
+    loadPortalCredentials(root, portal.id);
+  }
+
+  // Show/hide creds section when method changes
+  root.querySelector('#pcp-method').onchange = function () {
+    credsSection.style.display = this.value === 'playwright' ? 'block' : 'none';
+    if (this.value === 'playwright') loadPortalCredentials(root, portal.id);
+  };
+}
+
+async function loadPortalCredentials(root, portalId) {
+  root.querySelector('#pcc-msg').textContent = '';
+  try {
+    const c = await api('GET', `/api/portals/${portalId}/credentials`);
+    root.querySelector('#pcc-login-url').value = c.login_url || '';
+    root.querySelector('#pcc-username').value  = c.username  || '';
+    root.querySelector('#pcc-password').value  = '';
+    root.querySelector('#pcc-totp').value      = '';
+    root.querySelector('#pcc-has-password').textContent = c.has_password ? '(saved)' : '';
+    root.querySelector('#pcc-has-totp').textContent     = c.has_totp     ? '(saved)' : '';
+  } catch { /* ignore */ }
+
+  // Bind credential form only once per open
+  const form = root.querySelector('#portal-creds-form');
+  form.onsubmit = async e => {
+    e.preventDefault();
+    const body = {};
+    const loginUrl = root.querySelector('#pcc-login-url').value.trim();
+    const username = root.querySelector('#pcc-username').value.trim();
+    const password = root.querySelector('#pcc-password').value;
+    const totp     = root.querySelector('#pcc-totp').value.trim();
+    if (loginUrl) body.login_url   = loginUrl;
+    if (username) body.username    = username;
+    if (password) body.password    = password;
+    if (totp)     body.totp_secret = totp;
+    try {
+      await api('PUT', `/api/portals/${portalId}/credentials`, body);
+      showPccMsg(root, 'Credentials saved.', 'ok');
+      loadPortalCredentials(root, portalId);
+    } catch (err) { showPccMsg(root, err.message, 'error'); }
+  };
+
+  root.querySelector('#pcc-delete-btn').onclick = async () => {
+    if (!confirm('Delete stored credentials for this portal?')) return;
+    await api('DELETE', `/api/portals/${portalId}/credentials`);
+    root.querySelector('#pcc-login-url').value = '';
+    root.querySelector('#pcc-username').value  = '';
+    root.querySelector('#pcc-password').value  = '';
+    root.querySelector('#pcc-totp').value      = '';
+    root.querySelector('#pcc-has-password').textContent = '';
+    root.querySelector('#pcc-has-totp').textContent     = '';
+    showPccMsg(root, 'Credentials deleted.', 'ok');
+  };
+
+  root.querySelector('#pcc-clear-session-btn').onclick = async () => {
+    await api('DELETE', `/api/portals/${portalId}/session`);
+    showPccMsg(root, 'Session cleared.', 'ok');
+  };
+}
+
+function showPccMsg(root, msg, type) {
+  const el = root.querySelector('#pcc-msg');
+  el.textContent = msg;
+  el.style.color = type === 'error' ? 'var(--danger)' : 'var(--success, #4caf50)';
 }
 
 // ── Listings Tab ──────────────────────────────────────────────────────────────

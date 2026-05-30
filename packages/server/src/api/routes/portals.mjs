@@ -1,5 +1,9 @@
 import express from 'express';
-import { listPortals, addPortal, updatePortal, deletePortal, getPortal } from '../../models/portal.mjs';
+import {
+  listPortals, addPortal, updatePortal, deletePortal, getPortal,
+  getPortalCredentials, setPortalCredentials, clearPortalCredentials,
+  getPortalSession, clearPortalSession,
+} from '../../models/portal.mjs';
 import { requireAuth } from '../middleware/auth.mjs';
 import { dbRun, dbGet, dbAll } from '../../loaders/database.mjs';
 import { verifyPortal, refreshAllPortals, discoverPortalConfig } from '../../services/portal-catalog.mjs';
@@ -192,6 +196,50 @@ router.put('/catalog/schedule', requireAuth, async (req, res) => {
     [JSON.stringify(cfg), now]
   );
   await updateCatalogScheduler(cfg);
+  res.json({ ok: true });
+});
+
+// ── Playwright credentials ─────────────────────────────────────────────────────
+
+// GET /api/portals/:id/credentials — return credentials with password masked
+router.get('/:id/credentials', requireAuth, async (req, res) => {
+  const creds = await getPortalCredentials(req.params.id);
+  if (!creds) return res.json({ username: '', has_password: false, has_totp: false, login_url: '' });
+  res.json({
+    username:     creds.username  || '',
+    has_password: !!creds.password,
+    has_totp:     !!creds.totp_secret,
+    login_url:    creds.login_url || '',
+  });
+});
+
+// PUT /api/portals/:id/credentials — save/update credentials
+router.put('/:id/credentials', requireAuth, async (req, res) => {
+  const portal = await getPortal(req.params.id);
+  if (!portal) return res.status(404).json({ error: 'not found' });
+  const { username, password, totp_secret, login_url } = req.body;
+  const existing = await getPortalCredentials(req.params.id) || {};
+  const merged = {
+    username:    username    ?? existing.username    ?? '',
+    password:    password    ?? existing.password    ?? '',
+    totp_secret: totp_secret ?? existing.totp_secret ?? '',
+    login_url:   login_url   ?? existing.login_url   ?? '',
+  };
+  // Remove empty strings to keep JSON clean
+  Object.keys(merged).forEach(k => { if (merged[k] === '') delete merged[k]; });
+  await setPortalCredentials(req.params.id, merged);
+  res.json({ ok: true, username: merged.username || '', has_password: !!merged.password, has_totp: !!merged.totp_secret });
+});
+
+// DELETE /api/portals/:id/credentials — wipe stored credentials
+router.delete('/:id/credentials', requireAuth, async (req, res) => {
+  await clearPortalCredentials(req.params.id);
+  res.json({ ok: true });
+});
+
+// DELETE /api/portals/:id/session — clear saved Playwright session
+router.delete('/:id/session', requireAuth, async (req, res) => {
+  await clearPortalSession(req.params.id);
   res.json({ ok: true });
 });
 
